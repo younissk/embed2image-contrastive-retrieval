@@ -7,6 +7,7 @@ test:
 
 prepare:
 	uv sync
+	make download-dataset
 
 download-dataset:
 	uv run python -m src.utils.download_dataset
