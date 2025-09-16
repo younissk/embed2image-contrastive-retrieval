@@ -1,0 +1,62 @@
+
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environment
+.venv/
+venv/
+env/
+ENV/
+
+# uv/lock files (if not checked in)
+.uv/
+uv.lock
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# Test, coverage, and profiling output
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+
+# PyInstaller
+dist/
+build/
+*.spec
+
+# Logs and local data
+*.log
+*.sqlite3
+*.db
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE/editor configs
+.vscode/
+.idea/
+*.sublime-workspace
+*.sublime-project
+
+# Data/model artifacts
+data/
+models/
+outputs/
+results/
+checkpoints/
+
+# Misc
+*.bak
+*.tmp
