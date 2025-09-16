@@ -8,4 +8,13 @@ dependencies = [
     "aac-datasets",
     "requests",
     "tqdm",
+    "transformers",
+    "torch",
+    "torchvision",
+    "torchaudio",
+    "einops",
+    "timm",
+    "faiss-cpu",
+    "sentence-transformers",
+    "hear21passt",
 ]
