@@ -17,4 +17,5 @@ dependencies = [
     "faiss-cpu",
     "sentence-transformers",
     "hear21passt",
+    "huggingface-hub>=0.26.0",
 ]

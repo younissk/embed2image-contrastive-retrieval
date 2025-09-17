@@ -17,3 +17,10 @@ download-dataset:
 
 cache-embeddings:
 	uv run python -m src.utils.embeddings --metadata "$(METADATA)" --cache-dir "$(CACHE_DIR)" $(CACHE_ARGS)
+
+prepare-aws:
+	curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+	unzip awscliv2.zip
+	sudo ./aws/install
+	aws --version
+	aws configure

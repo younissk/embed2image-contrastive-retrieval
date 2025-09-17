@@ -15,6 +15,7 @@ from tqdm import tqdm
 
 from ..audio_encoder import AudioEncoder
 from ..text_encoder import TextEncoder
+from .hf_uploader import HFUploadError, HFDatasetUploader
 
 
 Sample = Mapping[str, object]
@@ -45,6 +46,10 @@ def cache_embeddings(
     force: bool = False,
     show_progress: bool = True,
     metadata_source: Optional[str] = None,
+    upload_every: Optional[int] = None,
+    hf_dataset: Optional[str] = None,
+    hf_prefix: str = "",
+    hf_token: Optional[str] = None,
 ) -> dict[str, Path]:
     """Generate embeddings for a dataset and persist them on disk.
 
@@ -70,6 +75,16 @@ def cache_embeddings(
         show_progress: Whether to display a progress bar.
         metadata_source: Optional string describing the metadata origin. Stored
             in the output JSON for traceability.
+        upload_every: If provided, upload intermediate checkpoints to the
+            Hugging Face dataset every ``upload_every`` processed pairs. Applies
+            only when ``hf_dataset`` is set.
+        hf_dataset: Optional Hugging Face dataset repository ID (e.g.
+            ``username/audio-text-embed-to-images``). When provided, the cache
+            files are mirrored to that dataset repository.
+        hf_prefix: Optional subdirectory inside the dataset repository for the
+            uploaded files.
+        hf_token: Optional Hugging Face access token. Falls back to the
+            ``HF_TOKEN`` environment variable or the cached CLI token.
 
     Returns:
         A dictionary with paths to the generated cache files.
@@ -100,6 +115,29 @@ def cache_embeddings(
     text_tensors: list[torch.Tensor] = []
     audio_embedding_cache: dict[str, torch.Tensor] = {}
 
+    uploader: HFDatasetUploader | None = None
+    if hf_dataset:
+        try:
+            uploader = HFDatasetUploader(
+                repo_id=hf_dataset,
+                prefix=hf_prefix,
+                token=hf_token,
+            )
+        except HFUploadError:
+            raise
+        except Exception as exc:  # pragma: no cover - defensive guard
+            raise HFUploadError(
+                f"Failed to initialise Hugging Face uploader for repo '{hf_dataset}': {exc}"
+            ) from exc
+
+    last_upload_count = 0
+
+    def _log(message: str) -> None:
+        if show_progress:
+            tqdm.write(message)
+        else:
+            print(message)
+
     iterator = range(0, len(sample_list), batch_size)
     if show_progress:
         iterator = tqdm(iterator, desc="Caching embeddings", unit="batch")
@@ -124,14 +162,87 @@ def cache_embeddings(
             ]
         )
 
-    audio_mat = torch.cat(audio_batches, dim=0)
-    text_mat = torch.cat(text_tensors, dim=0)
+        processed = len(ids)
+        should_upload = (
+            uploader is not None
+            and upload_every is not None
+            and upload_every > 0
+            and processed - last_upload_count >= upload_every
+        )
+
+        if should_upload:
+            paths = _write_cache_files(
+                cache_path,
+                audio_batches,
+                text_tensors,
+                ids,
+                audio_encoder,
+                text_encoder,
+                metadata_source,
+            )
+            upload_targets = _select_embedding_paths(paths)
+            commit_message = (
+                f"Upload partial embeddings ({processed} pairs processed)"
+            )
+            uris = uploader.upload_files(
+                upload_targets,
+                commit_message=commit_message,
+            )
+            last_upload_count = processed
+            _log(
+                f"Uploaded partial cache with {processed} pairs to"
+                f" {', '.join(uris)}"
+            )
+
+    paths = _write_cache_files(
+        cache_path,
+        audio_batches,
+        text_tensors,
+        ids,
+        audio_encoder,
+        text_encoder,
+        metadata_source,
+    )
+
+    if uploader is not None:
+        upload_targets = _select_embedding_paths(paths)
+        commit_message = f"Upload final embeddings ({len(ids)} pairs)"
+        uris = uploader.upload_files(upload_targets, commit_message=commit_message)
+        _log(
+            f"Uploaded final cache with {len(ids)} pairs to {', '.join(uris)}"
+        )
+
+    return paths
+
+
+def _string_id(sample: Sample, key: str, fallback: int) -> str:
+    value = sample.get(key)
+    if value is None:
+        return str(fallback)
+    return str(value)
+
+
+def _write_cache_files(
+    cache_path: Path,
+    audio_batches: Sequence[torch.Tensor],
+    text_batches: Sequence[torch.Tensor],
+    ids: Sequence[str],
+    audio_encoder: AudioEncoder,
+    text_encoder: TextEncoder,
+    metadata_source: Optional[str],
+) -> dict[str, Path]:
+    audio_cache_path = cache_path / "audio_embeddings.pt"
+    text_cache_path = cache_path / "text_embeddings.pt"
+    meta_cache_path = cache_path / "metadata.json"
+
+    audio_mat = torch.cat(list(audio_batches), dim=0)
+    text_mat = torch.cat(list(text_batches), dim=0)
 
     torch.save(audio_mat, audio_cache_path)
     torch.save(text_mat, text_cache_path)
 
     metadata: MutableMapping[str, object] = {
-        "ids": ids,
+        "ids": list(ids),
         "audio_embedding_shape": list(audio_mat.shape),
         "text_embedding_shape": list(text_mat.shape),
         "audio_sample_rate": audio_encoder.sample_rate,
@@ -139,6 +250,7 @@ def cache_embeddings(
         "text_encoder": type(text_encoder).__name__,
         "num_pairs": audio_mat.shape[0],
     }
+
     if metadata_source is not None:
         metadata["metadata_source"] = metadata_source
 
@@ -151,11 +263,8 @@ def cache_embeddings(
     }
 
 
-def _string_id(sample: Sample, key: str, fallback: int) -> str:
-    value = sample.get(key)
-    if value is None:
-        return str(fallback)
-    return str(value)
+def _select_embedding_paths(paths: Mapping[str, Path]) -> list[Path]:
+    return [paths[key] for key in ("audio", "text") if key in paths]
 
 
 def _audio_cache_key(audio: object) -> Optional[str]:
@@ -392,6 +501,30 @@ def build_argument_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Disable the progress bar",
     )
+    parser.add_argument(
+        "--upload-every",
+        type=int,
+        default=None,
+        help=(
+            "Upload intermediate caches to Hugging Face Hub after this many "
+            "pairs. Requires --hf-dataset."
+        ),
+    )
+    parser.add_argument(
+        "--hf-dataset",
+        default=None,
+        help="Hugging Face dataset repository to mirror cache files to",
+    )
+    parser.add_argument(
+        "--hf-prefix",
+        default="",
+        help="Optional folder path inside the dataset repository",
+    )
+    parser.add_argument(
+        "--hf-token",
+        default=None,
+        help="Hugging Face access token (falls back to HF_TOKEN env)",
+    )
     return parser
 
 
@@ -420,6 +553,10 @@ def main(argv: Optional[Sequence[str]] = None) -> dict[str, Path]:
         force=args.force,
         show_progress=not args.no_progress,
         metadata_source=str(metadata_path),
+        upload_every=args.upload_every,
+        hf_dataset=args.hf_dataset,
+        hf_prefix=args.hf_prefix,
+        hf_token=args.hf_token,
     )
 
 
