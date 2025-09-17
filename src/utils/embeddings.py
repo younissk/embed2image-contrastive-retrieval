@@ -16,6 +16,7 @@ from tqdm import tqdm
 from ..audio_encoder import AudioEncoder
 from ..text_encoder import TextEncoder
 from .hf_uploader import HFUploadError, HFDatasetUploader
+from .pseudo_images import EmbeddingImageExporter
 
 
 Sample = Mapping[str, object]
@@ -50,6 +51,12 @@ def cache_embeddings(
     hf_dataset: Optional[str] = None,
     hf_prefix: str = "",
     hf_token: Optional[str] = None,
+    generate_images: bool = False,
+    image_hw: int = 128,
+    image_mode: str = "nearest",
+    image_channel_mode: str = "split",
+    images_dirname: str = "pseudo_images",
+    image_clip_values: bool = False,
 ) -> dict[str, Path]:
     """Generate embeddings for a dataset and persist them on disk.
 
@@ -85,6 +92,14 @@ def cache_embeddings(
             uploaded files.
         hf_token: Optional Hugging Face access token. Falls back to the
             ``HF_TOKEN`` environment variable or the cached CLI token.
+        generate_images: If ``True`` (default) export pseudo-images derived from
+            the embeddings alongside the tensor caches.
+        image_hw: Resolution (height and width) for the generated pseudo-images.
+        image_mode: Interpolation mode passed to :func:`torch.nn.functional.interpolate`.
+        image_channel_mode: Channel behaviour for :class:`Embed2Image`
+            (``"split"`` or ``"replicate"``).
+        images_dirname: Directory name created under ``cache_dir`` to store the
+            generated images.
 
     Returns:
         A dictionary with paths to the generated cache files.
@@ -116,6 +131,17 @@ def cache_embeddings(
     audio_embedding_cache: dict[str, torch.Tensor] = {}
 
     uploader: HFDatasetUploader | None = None
+    image_exporter: EmbeddingImageExporter | None = None
+    pending_image_paths: list[Path] = []
+
+    if generate_images:
+        image_exporter = EmbeddingImageExporter(
+            root=cache_path / images_dirname,
+            image_size=image_hw,
+            mode=image_mode,
+            channel_mode=image_channel_mode,
+            clip_values=image_clip_values,
+        )
     if hf_dataset:
         try:
             uploader = HFDatasetUploader(
@@ -162,6 +188,19 @@ def cache_embeddings(
             ]
         )
 
+        if image_exporter is not None:
+            batch_ids = ids[-len(batch) :]
+            pending_image_paths.extend(
+                image_exporter.export_batch(
+                    "audio", batch_audio_embeddings, batch_ids
+                )
+            )
+            pending_image_paths.extend(
+                image_exporter.export_batch(
+                    "text", text_embeddings, batch_ids
+                )
+            )
+
         processed = len(ids)
         should_upload = (
             uploader is not None
@@ -181,6 +220,7 @@ def cache_embeddings(
                 metadata_source,
             )
             upload_targets = _select_embedding_paths(paths)
+            upload_targets.extend(pending_image_paths)
             commit_message = (
                 f"Upload partial embeddings ({processed} pairs processed)"
             )
@@ -189,6 +229,7 @@ def cache_embeddings(
                 commit_message=commit_message,
             )
             last_upload_count = processed
+            pending_image_paths.clear()
             _log(
                 f"Uploaded partial cache with {processed} pairs to"
                 f" {', '.join(uris)}"
@@ -206,6 +247,7 @@ def cache_embeddings(
 
     if uploader is not None:
         upload_targets = _select_embedding_paths(paths)
+        upload_targets.extend(pending_image_paths)
         commit_message = f"Upload final embeddings ({len(ids)} pairs)"
         uris = uploader.upload_files(upload_targets, commit_message=commit_message)
         _log(
@@ -525,6 +567,38 @@ def build_argument_parser() -> argparse.ArgumentParser:
         default=None,
         help="Hugging Face access token (falls back to HF_TOKEN env)",
     )
+    parser.add_argument(
+        "--with-images",
+        action="store_true",
+        help="Generate pseudo-images alongside embeddings",
+    )
+    parser.add_argument(
+        "--image-size",
+        type=int,
+        default=128,
+        help="Target height/width for generated pseudo-images",
+    )
+    parser.add_argument(
+        "--image-mode",
+        default="nearest",
+        help="Interpolation mode used when resizing pseudo-images",
+    )
+    parser.add_argument(
+        "--image-channel-mode",
+        default="split",
+        choices=["split", "replicate"],
+        help="Channel mapping behaviour when folding embeddings into images",
+    )
+    parser.add_argument(
+        "--images-dir",
+        default="pseudo_images",
+        help="Subdirectory (under cache dir) used to store generated images",
+    )
+    parser.add_argument(
+        "--clip-images",
+        action="store_true",
+        help="Clip embeddings to [-1, 1] before converting to pseudo-images",
+    )
     return parser
 
 
@@ -557,6 +631,12 @@ def main(argv: Optional[Sequence[str]] = None) -> dict[str, Path]:
         hf_dataset=args.hf_dataset,
         hf_prefix=args.hf_prefix,
         hf_token=args.hf_token,
+        generate_images=args.with_images,
+        image_hw=args.image_size,
+        image_mode=args.image_mode,
+        image_channel_mode=args.image_channel_mode,
+        images_dirname=args.images_dir,
+        image_clip_values=args.clip_images,
     )
 
 

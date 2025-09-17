@@ -71,7 +71,42 @@ Hugging Face dataset repository so you can version them alongside your runs.
    ```
 
 With `--upload-every` the command saves the partial tensors locally and pushes
-`audio_embeddings.pt` and `text_embeddings.pt` every *N* pairs. The final
-iteration always uploads the freshest files. Drop `--upload-every` if you only
-need the terminal snapshot. Pass `--hf-token` explicitly when you prefer not to
-rely on the cached CLI credentials or environment variable.
+the `audio_embeddings.pt` / `text_embeddings.pt` files every *N* pairs. Drop
+`--upload-every` if you only need the terminal snapshot. Pass `--hf-token`
+explicitly when you prefer not to rely on the cached CLI credentials or
+environment variable. Add `--with-images` if you want the same run to also
+generate pseudo-images (see below).
+
+### Pseudo-Image Export
+
+Run pseudo-image generation separately once embeddings are cached:
+
+```bash
+uv run python -m src.utils.images --cache-dir ~/data/CLOTHO_v2.1/embeddings/development \
+    --hf-dataset username/audio-text-embed-to-images --hf-prefix runs/dev-images \
+    --upload-every 100
+```
+
+Or via the Makefile helper (propagate flags with `IMAGES_ARGS`):
+
+```bash
+make cache-images CACHE_DIR=~/data/CLOTHO_v2.1/embeddings/development \
+    IMAGES_ARGS="--hf-dataset username/audio-text-embed-to-images --upload-every 100 --include-embeddings"
+```
+
+The image command reshapes each embedding into an RGB pseudo-image and stores it under
+`pseudo_images/audio` and `pseudo_images/text` within the cache directory. These
+PNGs are mirrored to the Hub alongside the tensors. Tune the behaviour with:
+
+- `--image-size` – spatial resolution of the generated images (default 128)
+- `--image-mode` – interpolation strategy used during resizing (default
+  `nearest`)
+- `--image-channel-mode` – fold embeddings by splitting into RGB channels or
+  replicating a single channel (`split`/`replicate`)
+- `--images-dir` – custom folder name inside the cache directory
+- `--clip-values` / `--clip-images` – clamp embeddings to `[-1, 1]` before
+  normalising (flag name differs between the standalone and combined CLIs)
+- `--include-embeddings` – push the `.pt` tensors/metadata in the same commit
+
+The same flags are honoured by `src.utils.embeddings` whenever `--with-images`
+is supplied.
