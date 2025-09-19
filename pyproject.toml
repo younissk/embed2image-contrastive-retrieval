@@ -18,5 +18,6 @@ dependencies = [
     "sentence-transformers",
     "hear21passt",
     "huggingface-hub>=0.26.0",
+    "lightning>=2.2.0",
     "wandb>=0.22.0",
 ]

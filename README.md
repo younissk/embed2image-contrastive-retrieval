@@ -6,37 +6,45 @@
 make prepare
 ```
 
-This installs the project dependencies via `uv`, creates the virtual
-environment, and downloads the Clotho v2.1 audio/caption files into
-`~/data/CLOTHO_v2.1`.
+This installs dependencies with `uv`, sets up the virtual environment, and
+ensures the Clotho v2.1 audio/caption files are downloaded into
+`~/data/CLOTHO_v2.1`. You can re-run `make download-dataset` at any time to
+refresh the archives.
 
-If you ever need to refresh the raw dataset without re-installing, run:
+## Lightning Training (PaSST + RoBERTa)
 
-```bash
-make download-dataset
-```
-
-## Fine-tuning (PaSST + RoBERTa)
-
-All training now happens end-to-end on the original audio and captions, closely
-mirroring the DCASE Task 6 baseline. Launch a run with:
+Training is driven by a PyTorch Lightning module that mirrors the DCASE Task 6
+baseline (PaSST audio encoder + RoBERTa text encoder with learned projection
+heads). Launch a run and forward any CLI options through `TRAIN_ARGS`:
 
 ```bash
-make train TRAIN_ARGS="--epochs 20 --batch-size 32 --max-lr 3e-6"
+make train TRAIN_ARGS="\
+  --batch-size 4 \
+  --accumulate-grad-batches 8 \
+  --max-audio-seconds 12 \
+  --epochs 20 \
+  --precision bf16-mixed \
+  --max-lr 3e-6"
 ```
 
-Useful flags (`uv run python -m src.train_finetune --help` for the full list):
+### Useful arguments (`uv run python -m src.train_finetune --help`)
 
-- `--audio-arch`: PaSST backbone (default `passt_s_swa_p16_128_ap476`)
-- `--text-model`: Hugging Face text encoder (`roberta-base` by default)
-- `--projection-dim` / `--hidden-dim`: projection head sizes
-- `--val-fraction`: held-out portion of Clotho captions (default `0.1`)
-- `--use-wandb` and `--wandb-project`: stream metrics to Weights & Biases
+- `--batch-size` / `--accumulate-grad-batches`: use small micro-batches that fit
+  comfortably in memory and recover the desired effective batch with gradient
+  accumulation. On large GPUs (A100/H100) a good starting point is
+  `--batch-size 4 --accumulate-grad-batches 8`.
+- `--max-audio-seconds`: truncate clips before PaSST to control memory/latency.
+  Values around 10–15 s keep utilisation high without exhausting VRAM.
+- `--audio-arch`, `--text-model`, `--projection-dim`, `--hidden-dim`: model
+  customisation if you want to deviate from the baseline defaults.
+- `--precision`: set mixed precision (`bf16-mixed`, `16-mixed`, etc.) to leverage
+  tensor cores.
+- `--use-wandb` / `--wandb-project`: stream metrics to Weights & Biases.
 
-Checkpoints are written to `checkpoints/finetune_baseline.pt` and every training
-run also drops a JSONL log in `logs/finetune/` for reproducibility.
+Lightning handles checkpointing (best validation loss) and logs learning-rate
+curves; checkpoints land under `--output-dir` (default `checkpoints/`).
 
-### Weights & Biases
+## Weights & Biases
 
 Authenticate once per machine:
 
@@ -44,12 +52,11 @@ Authenticate once per machine:
 uv run wandb login
 ```
 
-Then pass the flag (and optionally a project name) to any training run:
+Then enable logging on any run:
 
 ```bash
 WANDB_PROJECT=embed2image make train \
-  TRAIN_ARGS="--use-wandb --run-name a10-baseline --epochs 20"
+  TRAIN_ARGS="--use-wandb --run-name h100-baseline --batch-size 4 --accumulate-grad-batches 8"
 ```
 
-The W&B run mirrors the JSONL log, so you can inspect metrics either locally or
-in the dashboard.
+If W&B is disabled the run still logs locally via PyTorch Lightning.
