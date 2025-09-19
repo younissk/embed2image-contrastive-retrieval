@@ -1,12 +1,14 @@
-"""Fine-tune audio/text encoders with contrastive loss, baseline and vision variants."""
+"""Fine-tune PaSST + RoBERTa encoders on Clotho with a contrastive objective."""
 
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import math
 import os
 import random
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Optional
@@ -20,15 +22,10 @@ from transformers import AutoModel, AutoTokenizer
 
 from hear21passt.base import get_basic_model
 
-from .train_projection import (
-    VisionProjectionHead,
-    _WandbRun,
-    _append_log,
-    _sanitize_identifier,
-    _setup_log_file,
-)
-from .utils.embed2image import Embed2Image
-from .utils.embeddings import _load_samples
+try:  # optional logging backend
+    import wandb
+except ModuleNotFoundError:  # pragma: no cover - optional dependency
+    wandb = None
 
 DEFAULT_METADATA = (
     Path.home()
@@ -41,39 +38,90 @@ DEFAULT_METADATA = (
 
 @dataclass(slots=True)
 class Sample:
-    audio: Path
-    text: str
+    audio_path: Path
+    caption: str
     sample_id: str
 
 
+def _sanitize_identifier(value: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9_.-]+", "_", value).strip("._")
+    return cleaned or "sample"
+
+
+def _load_clotho_samples(metadata_path: Path) -> list[Sample]:
+    if metadata_path.suffix.lower() != ".csv":
+        raise ValueError("Expected a Clotho caption CSV as metadata input")
+
+    dataset_root = metadata_path.parent.parent
+    split = _infer_split(metadata_path)
+    audio_dir = dataset_root / "clotho_audio_files" / split
+    if not audio_dir.exists():
+        raise FileNotFoundError(
+            f"Missing audio directory '{audio_dir}'. Run 'make download-dataset' first."
+        )
+
+    samples: list[Sample] = []
+    with metadata_path.open("r", encoding="utf-8") as handle:
+        reader = csv.DictReader(handle)
+        caption_columns = [col for col in reader.fieldnames or [] if col.startswith("caption_")]
+        if "file_name" not in (reader.fieldnames or []):
+            raise ValueError("CSV must provide a 'file_name' column")
+        if not caption_columns:
+            raise ValueError("CSV must contain caption_* columns")
+
+        for row in reader:
+            filename = row["file_name"].strip()
+            audio_path = audio_dir / filename
+            if not audio_path.exists():
+                raise FileNotFoundError(f"Audio file not found: {audio_path}")
+            for idx, column in enumerate(caption_columns, start=1):
+                caption = row.get(column, "").strip()
+                if not caption:
+                    continue
+                sample_id = f"{filename}#{idx}"
+                samples.append(
+                    Sample(audio_path=audio_path, caption=caption, sample_id=_sanitize_identifier(sample_id))
+                )
+
+    if not samples:
+        raise ValueError(f"No samples found in metadata file {metadata_path}")
+
+    return samples
+
+
+def _infer_split(metadata_path: Path) -> str:
+    stem = metadata_path.stem.lower()
+    if "development" in stem:
+        return "development"
+    if "validation" in stem:
+        return "validation"
+    if "evaluation" in stem:
+        return "evaluation"
+    raise ValueError(
+        "Unable to infer split from metadata filename. Expected one of development/validation/evaluation."
+    )
+
+
 class ContrastiveDataset(Dataset):
-    """Dataset that loads raw audio waveforms and paired captions."""
+    """Dataset yielding waveform/caption pairs for contrastive training."""
 
     def __init__(
         self,
-        samples: Iterable[dict[str, str]],
+        samples: Iterable[Sample],
         *,
-        sample_rate: int = 32000,
+        sample_rate: int,
         max_seconds: Optional[float] = None,
     ) -> None:
-        self._entries: list[Sample] = []
+        self._items = list(samples)
         self.sample_rate = sample_rate
         self.max_length = int(max_seconds * sample_rate) if max_seconds else None
 
-        for item in samples:
-            path = Path(item["audio"]).expanduser()
-            if not path.exists():
-                raise FileNotFoundError(f"Audio file not found: {path}")
-            text = str(item["text"])
-            sample_id = str(item.get("id") or _sanitize_identifier(path.stem))
-            self._entries.append(Sample(path, text, sample_id))
-
     def __len__(self) -> int:  # pragma: no cover - trivial
-        return len(self._entries)
+        return len(self._items)
 
     def __getitem__(self, index: int) -> dict[str, object]:  # pragma: no cover - trivial
-        entry = self._entries[index]
-        waveform, sr = torchaudio.load(entry.audio)
+        sample = self._items[index]
+        waveform, sr = torchaudio.load(sample.audio_path)
         if waveform.ndim > 1:
             waveform = waveform.mean(dim=0, keepdim=True)
         waveform = waveform.squeeze(0)
@@ -88,22 +136,22 @@ class ContrastiveDataset(Dataset):
 
         return {
             "audio": waveform,
-            "text": entry.text,
-            "id": entry.sample_id,
             "length": waveform.numel(),
+            "text": sample.caption,
+            "id": sample.sample_id,
         }
 
 
 class ContrastiveCollate:
-    """Pad waveforms and tokenize captions."""
+    """Pad audio and batch tokenized captions."""
 
-    def __init__(self, tokenizer: AutoTokenizer, max_text_length: int = 32) -> None:
+    def __init__(self, tokenizer: AutoTokenizer, max_text_length: int) -> None:
         self.tokenizer = tokenizer
         self.max_text_length = max_text_length
 
-    def __call__(self, batch: list[dict[str, object]]) -> dict[str, object]:
+    def __call__(self, batch: list[dict[str, object]]) -> dict[str, object]:  # pragma: no cover - trivial
         if not batch:
-            raise ValueError("Batch is empty")
+            raise ValueError("Empty batch")
 
         lengths = [int(item["length"]) for item in batch]
         max_len = max(lengths)
@@ -112,27 +160,22 @@ class ContrastiveCollate:
             waveform = item["audio"]
             audio_batch[idx, : waveform.numel()] = waveform
 
-        texts = [str(item["text"]) for item in batch]
         tokenized = self.tokenizer(
-            texts,
+            [str(item["text"]) for item in batch],
             return_tensors="pt",
             padding=True,
             truncation=True,
             max_length=self.max_text_length,
         )
 
-        sample_ids = [str(item["id"]) for item in batch]
-
         return {
             "audio": audio_batch,
-            "audio_lengths": torch.tensor(lengths, dtype=torch.long),
             "text_inputs": tokenized,
-            "ids": sample_ids,
         }
 
 
 class WarmupCosineScheduler:
-    """Cosine scheduler with linear warmup."""
+    """Cosine annealing with linear warmup wrapper."""
 
     def __init__(
         self,
@@ -163,13 +206,9 @@ class WarmupCosineScheduler:
             progress = self.step_num / max(1, self.warmup_steps)
             lr = self.min_lr + (self.max_lr - self.min_lr) * progress
         else:
-            decay_progress = (self.step_num - self.warmup_steps) / max(
-                1, self.total_steps - self.warmup_steps
-            )
+            decay_progress = (self.step_num - self.warmup_steps) / max(1, self.total_steps - self.warmup_steps)
             decay_progress = min(decay_progress, 1.0)
-            lr = self.min_lr + 0.5 * (self.max_lr - self.min_lr) * (
-                1.0 + math.cos(math.pi * decay_progress)
-            )
+            lr = self.min_lr + 0.5 * (self.max_lr - self.min_lr) * (1.0 + math.cos(math.pi * decay_progress))
         self._set_lr(lr)
         return lr
 
@@ -177,34 +216,46 @@ class WarmupCosineScheduler:
         return self.current_lr
 
 
+class ProjectionHead(nn.Module):
+    """Two-layer MLP for projection to the shared embedding space."""
+
+    def __init__(self, in_dim: int, hidden_dim: int, out_dim: int, dropout: float) -> None:
+        super().__init__()
+        layers: list[nn.Module] = []
+        if hidden_dim > 0:
+            layers.append(nn.Linear(in_dim, hidden_dim))
+            layers.append(nn.GELU())
+            if dropout > 0:
+                layers.append(nn.Dropout(dropout))
+            layers.append(nn.Linear(hidden_dim, out_dim))
+        else:
+            layers.append(nn.Linear(in_dim, out_dim))
+        self.net = nn.Sequential(*layers)
+
+    def forward(self, inputs: torch.Tensor) -> torch.Tensor:  # pragma: no cover - trivial
+        return self.net(inputs)
+
+
 class RetrievalModel(nn.Module):
-    """Audio-text retrieval model with optional vision projection head."""
+    """PaSST audio encoder + RoBERTa text encoder with projection heads."""
 
     def __init__(
         self,
         *,
         audio_arch: str,
-        text_model_name: str,
+        text_model: str,
         projection_dim: int,
         hidden_dim: int,
         dropout: float,
-        model_type: str,
-        vision_image_size: int,
-        vision_image_mode: str,
-        vision_channel_mode: str,
     ) -> None:
         super().__init__()
-
-        self.model_type = model_type
-        self.device = torch.device(
-            "cuda" if torch.cuda.is_available() else "cpu"
-        )
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         self.audio_model = get_basic_model(mode="embed_only", arch=audio_arch)
         self.audio_model.to(self.device)
 
         self.text_model = AutoModel.from_pretrained(
-            text_model_name,
+            text_model,
             add_pooling_layer=False,
             hidden_dropout_prob=0.1,
             attention_probs_dropout_prob=0.1,
@@ -214,55 +265,17 @@ class RetrievalModel(nn.Module):
         audio_dim = getattr(self.audio_model, "embed_dim", 768)
         text_dim = self.text_model.config.hidden_size
 
-        if model_type == "vision":
-            self.embed_to_image = Embed2Image(
-                target_hw=vision_image_size,
-                mode=vision_image_mode,
-                channel_mode=vision_channel_mode,
-            )
-            self.vision_head = VisionProjectionHead(
-                out_dim=projection_dim,
-                base_channels=32,
-                hidden_dim=hidden_dim,
-                dropout=dropout,
-            )
-        else:
-            head_layers: list[nn.Module] = []
-            if hidden_dim:
-                head_layers.append(nn.Linear(audio_dim, hidden_dim))
-                head_layers.append(nn.GELU())
-                if dropout > 0:
-                    head_layers.append(nn.Dropout(dropout))
-                head_layers.append(nn.Linear(hidden_dim, projection_dim))
-            else:
-                head_layers.append(nn.Linear(audio_dim, projection_dim))
-            self.audio_projection = nn.Sequential(*head_layers)
-
-        text_layers: list[nn.Module] = []
-        if hidden_dim:
-            text_layers.append(nn.Linear(text_dim, hidden_dim))
-            text_layers.append(nn.GELU())
-            if dropout > 0:
-                text_layers.append(nn.Dropout(dropout))
-            text_layers.append(nn.Linear(hidden_dim, projection_dim))
-        else:
-            text_layers.append(nn.Linear(text_dim, projection_dim))
-        self.text_projection = nn.Sequential(*text_layers)
+        self.audio_projection = ProjectionHead(audio_dim, hidden_dim, projection_dim, dropout)
+        self.text_projection = ProjectionHead(text_dim, hidden_dim, projection_dim, dropout)
 
         self.temperature = nn.Parameter(torch.tensor(0.07))
 
-    def encode_audio(self, audio_waveforms: torch.Tensor) -> torch.Tensor:
-        waveforms = audio_waveforms.to(self.device)
-        audio_embeddings = self.audio_model.get_scene_embeddings(waveforms)
-        if self.model_type == "vision":
-            images = self.embed_to_image(audio_embeddings)
-            audio_proj = self.vision_head(images)
-        else:
-            audio_proj = self.audio_projection(audio_embeddings)
-        return audio_proj
+    def encode_audio(self, waveforms: torch.Tensor) -> torch.Tensor:
+        embeddings = self.audio_model.get_scene_embeddings(waveforms.to(self.device))
+        return self.audio_projection(embeddings)
 
     def encode_text(self, text_inputs: dict[str, torch.Tensor]) -> torch.Tensor:
-        inputs = {key: value.to(self.device) for key, value in text_inputs.items()}
+        inputs = {k: v.to(self.device) for k, v in text_inputs.items()}
         outputs = self.text_model(**inputs)
         hidden = outputs.last_hidden_state
         attention_mask = inputs["attention_mask"].unsqueeze(-1)
@@ -271,48 +284,39 @@ class RetrievalModel(nn.Module):
         text_features = summed / counts
         return self.text_projection(text_features)
 
-    def forward(
-        self,
-        audio_waveforms: torch.Tensor,
-        text_inputs: dict[str, torch.Tensor],
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        anchor = self.encode_audio(audio_waveforms)
-        text = self.encode_text(text_inputs)
-        anchor = F.normalize(anchor, dim=-1)
-        text = F.normalize(text, dim=-1)
+    def forward(self, waveforms: torch.Tensor, text_inputs: dict[str, torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
+        anchor = F.normalize(self.encode_audio(waveforms), dim=-1)
+        text = F.normalize(self.encode_text(text_inputs), dim=-1)
         return anchor, text
 
     def current_temperature(self) -> torch.Tensor:
         return torch.abs(self.temperature) + 1e-6
 
 
-def contrastive_loss(
-    anchor_proj: torch.Tensor, text_proj: torch.Tensor, temperature: torch.Tensor
-) -> tuple[torch.Tensor, torch.Tensor]:
-    logits = anchor_proj @ text_proj.T / temperature
+def contrastive_loss(anchor: torch.Tensor, text: torch.Tensor, temperature: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    logits = anchor @ text.t() / temperature
     targets = torch.arange(logits.size(0), device=logits.device)
     loss_a = F.cross_entropy(logits, targets)
-    loss_t = F.cross_entropy(logits.T, targets)
+    loss_t = F.cross_entropy(logits.t(), targets)
     return 0.5 * (loss_a + loss_t), logits
 
 
 def compute_metrics(logits: torch.Tensor) -> dict[str, float]:
     targets = torch.arange(logits.size(0), device=logits.device)
-    top1_anchor = (logits.argmax(dim=1) == targets).float().mean().item()
-    top1_text = (logits.argmax(dim=0) == targets).float().mean().item()
+    acc_anchor = (logits.argmax(dim=1) == targets).float().mean().item()
+    acc_text = (logits.argmax(dim=0) == targets).float().mean().item()
     return {
-        "acc_audio_to_text": top1_anchor,
-        "acc_text_to_audio": top1_text,
+        "acc_audio_to_text": acc_anchor,
+        "acc_text_to_audio": acc_text,
     }
 
 
 def split_dataset(dataset: Dataset, val_fraction: float, seed: int) -> tuple[Dataset, Dataset]:
     if val_fraction <= 0:
         return dataset, Subset(dataset, [])
-    generator = torch.Generator()
-    generator.manual_seed(seed)
-    num_val = max(1, int(len(dataset) * val_fraction))
+    generator = torch.Generator().manual_seed(seed)
     indices = torch.randperm(len(dataset), generator=generator).tolist()
+    num_val = max(1, int(len(dataset) * val_fraction))
     val_indices = indices[:num_val]
     train_indices = indices[num_val:]
     return Subset(dataset, train_indices), Subset(dataset, val_indices)
@@ -325,7 +329,7 @@ def train(args: argparse.Namespace) -> None:
         torch.cuda.manual_seed_all(args.seed)
 
     metadata_path = Path(args.metadata).expanduser()
-    samples = _load_samples(metadata_path)
+    samples = _load_clotho_samples(metadata_path)
 
     dataset = ContrastiveDataset(
         samples,
@@ -342,18 +346,18 @@ def train(args: argparse.Namespace) -> None:
         train_dataset,
         batch_size=args.batch_size,
         shuffle=True,
+        drop_last=True,
         num_workers=args.num_workers,
         collate_fn=collate,
-        drop_last=True,
     )
     val_loader = (
         DataLoader(
             val_dataset,
             batch_size=args.batch_size,
             shuffle=False,
+            drop_last=False,
             num_workers=args.num_workers,
             collate_fn=collate,
-            drop_last=False,
         )
         if len(val_dataset) > 0
         else None
@@ -361,22 +365,13 @@ def train(args: argparse.Namespace) -> None:
 
     model = RetrievalModel(
         audio_arch=args.audio_arch,
-        text_model_name=args.text_model,
+        text_model=args.text_model,
         projection_dim=args.projection_dim,
         hidden_dim=args.hidden_dim,
         dropout=args.dropout,
-        model_type=args.model_type,
-        vision_image_size=args.vision_image_size,
-        vision_image_mode=args.vision_image_mode,
-        vision_channel_mode=args.vision_channel_mode,
-    )
-    model.to(model.device)
+    ).to(torch.device("cuda" if torch.cuda.is_available() else "cpu"))
 
-    optimizer = torch.optim.AdamW(
-        model.parameters(),
-        weight_decay=args.weight_decay,
-    )
-
+    optimizer = torch.optim.AdamW(model.parameters(), weight_decay=args.weight_decay)
     total_steps = args.epochs * max(1, len(train_loader))
     scheduler = WarmupCosineScheduler(
         optimizer,
@@ -392,7 +387,6 @@ def train(args: argparse.Namespace) -> None:
         args.run_name,
         {
             "metadata": str(metadata_path),
-            "model_type": args.model_type,
             "dataset_size": len(dataset),
             "args": vars(args),
         },
@@ -404,7 +398,6 @@ def train(args: argparse.Namespace) -> None:
         project=wandb_project,
         run_name=args.run_name,
         config={
-            "model_type": args.model_type,
             "dataset_size": len(dataset),
             **{f"arg/{key}": value for key, value in vars(args).items()},
         },
@@ -414,7 +407,7 @@ def train(args: argparse.Namespace) -> None:
     best_epoch: Optional[int] = None
     output_dir = Path(args.output_dir).expanduser()
     output_dir.mkdir(parents=True, exist_ok=True)
-    checkpoint_path = output_dir / f"finetune_{args.model_type}.pt"
+    checkpoint_path = output_dir / "finetune_baseline.pt"
 
     with wandb_run:
         for epoch in range(1, args.epochs + 1):
@@ -427,22 +420,16 @@ def train(args: argparse.Namespace) -> None:
                 optimizer.zero_grad(set_to_none=True)
 
                 audio = batch["audio"].to(model.device)
-                text_inputs = {
-                    key: value.to(model.device)
-                    for key, value in batch["text_inputs"].items()
-                }
+                text_inputs = {k: v.to(model.device) for k, v in batch["text_inputs"].items()}
 
                 anchor_proj, text_proj = model(audio, text_inputs)
-                loss, logits = contrastive_loss(
-                    anchor_proj, text_proj, model.current_temperature()
-                )
+                loss, logits = contrastive_loss(anchor_proj, text_proj, model.current_temperature())
                 loss.backward()
 
                 if args.grad_clip_norm > 0:
                     torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip_norm)
 
                 optimizer.step()
-                scheduler.step()
 
                 epoch_loss += loss.item()
                 num_batches += 1
@@ -458,37 +445,30 @@ def train(args: argparse.Namespace) -> None:
                 model.eval()
                 val_loss = 0.0
                 val_batches = 0
-                metrics_accumulator = {"acc_audio_to_text": 0.0, "acc_text_to_audio": 0.0}
+                metrics_acc = {"acc_audio_to_text": 0.0, "acc_text_to_audio": 0.0}
 
                 with torch.no_grad():
                     for batch in val_loader:
                         audio = batch["audio"].to(model.device)
-                        text_inputs = {
-                            key: value.to(model.device)
-                            for key, value in batch["text_inputs"].items()
-                        }
+                        text_inputs = {k: v.to(model.device) for k, v in batch["text_inputs"].items()}
                         anchor_proj, text_proj = model(audio, text_inputs)
-                        loss, logits = contrastive_loss(
-                            anchor_proj, text_proj, model.current_temperature()
-                        )
+                        loss, logits = contrastive_loss(anchor_proj, text_proj, model.current_temperature())
                         metrics = compute_metrics(logits)
                         val_loss += loss.item()
                         val_batches += 1
-                        for key in metrics_accumulator:
-                            metrics_accumulator[key] += metrics[key]
+                        for key in metrics_acc:
+                            metrics_acc[key] += metrics[key]
 
                 avg_val_loss = val_loss / max(1, val_batches)
                 log_items["val_loss"] = avg_val_loss
-                for key in metrics_accumulator:
-                    log_items[key] = metrics_accumulator[key] / max(1, val_batches)
+                for key in metrics_acc:
+                    log_items[key] = metrics_acc[key] / max(1, val_batches)
 
                 metric_to_track = log_items.get(args.selection_metric, avg_val_loss)
                 improved = (
                     best_metric is None
                     or (
-                        metric_to_track < best_metric
-                        if args.metric_mode == "min"
-                        else metric_to_track > best_metric
+                        metric_to_track < best_metric if args.metric_mode == "min" else metric_to_track > best_metric
                     )
                 )
                 if improved:
@@ -501,9 +481,6 @@ def train(args: argparse.Namespace) -> None:
                             "metric": metric_to_track,
                             "args": vars(args),
                             "model_state": model.state_dict(),
-                            "tokenizer": args.text_model,
-                            "audio_arch": args.audio_arch,
-                            "model_type": args.model_type,
                         },
                         checkpoint_path,
                     )
@@ -515,9 +492,6 @@ def train(args: argparse.Namespace) -> None:
                         "metric": avg_train_loss,
                         "args": vars(args),
                         "model_state": model.state_dict(),
-                        "tokenizer": args.text_model,
-                        "audio_arch": args.audio_arch,
-                        "model_type": args.model_type,
                     },
                     checkpoint_path,
                 )
@@ -542,30 +516,25 @@ def train(args: argparse.Namespace) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--metadata", default=str(DEFAULT_METADATA), help="Metadata CSV/JSON path")
+    parser.add_argument("--metadata", default=str(DEFAULT_METADATA), help="Path to Clotho caption CSV")
     parser.add_argument("--output-dir", default="checkpoints", help="Directory for checkpoints")
     parser.add_argument("--log-dir", default="logs", help="Directory for JSONL logs")
-    parser.add_argument("--run-name", default=None, help="Optional run identifier for logging")
+    parser.add_argument("--run-name", default=None, help="Optional identifier for logging")
     parser.add_argument("--use-wandb", action="store_true", help="Stream metrics to Weights & Biases")
-    parser.add_argument(
-        "--wandb-project",
-        default=None,
-        help="Project name for Weights & Biases (defaults to WANDB_PROJECT env)",
-    )
+    parser.add_argument("--wandb-project", default=None, help="Override WANDB_PROJECT for the run")
 
-    parser.add_argument("--model-type", choices=["baseline", "vision"], default="baseline")
-    parser.add_argument("--audio-arch", default="passt_s_swa_p16_128_ap476", help="PaSST architecture")
+    parser.add_argument("--audio-arch", default="passt_s_swa_p16_128_ap476", help="PaSST architecture name")
     parser.add_argument("--text-model", default="roberta-base", help="Hugging Face text model")
     parser.add_argument("--projection-dim", type=int, default=1024, help="Shared embedding dimension")
-    parser.add_argument("--hidden-dim", type=int, default=1024, help="Hidden size for projection MLPs")
-    parser.add_argument("--dropout", type=float, default=0.1, help="Dropout for projection heads")
-    parser.add_argument("--sample-rate", type=int, default=32000, help="Target audio sample rate")
-    parser.add_argument("--max-audio-seconds", type=float, default=None, help="Optional max audio length in seconds")
+    parser.add_argument("--hidden-dim", type=int, default=1024, help="Hidden layer size for projection heads")
+    parser.add_argument("--dropout", type=float, default=0.1, help="Dropout applied in projection heads")
+    parser.add_argument("--sample-rate", type=int, default=32000, help="Target sample rate for audio")
+    parser.add_argument("--max-audio-seconds", type=float, default=None, help="Optional max waveform length in seconds")
     parser.add_argument("--max-text-length", type=int, default=32, help="Tokenization max length")
 
     parser.add_argument("--batch-size", type=int, default=32, help="Mini-batch size")
-    parser.add_argument("--epochs", type=int, default=10, help="Number of epochs")
-    parser.add_argument("--warmup-epochs", type=float, default=1.0, help="Warmup duration in epochs")
+    parser.add_argument("--epochs", type=int, default=10, help="Number of training epochs")
+    parser.add_argument("--warmup-epochs", type=float, default=1.0, help="Warmup duration (in epochs)")
     parser.add_argument("--max-lr", type=float, default=3e-6, help="Peak learning rate")
     parser.add_argument("--min-lr", type=float, default=1e-7, help="Final learning rate")
     parser.add_argument("--weight-decay", type=float, default=0.0, help="Weight decay")
@@ -574,16 +543,36 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num-workers", type=int, default=4, help="DataLoader workers")
     parser.add_argument("--seed", type=int, default=13, help="Random seed")
 
-    parser.add_argument("--selection-metric", default="val_loss", help="Metric key used for best checkpoint")
-    parser.add_argument("--metric-mode", choices=["min", "max"], default="min", help="Direction for selection metric")
-
-    parser.add_argument("--vision-image-size", type=int, default=128, help="Pseudo-image size for vision model")
-    parser.add_argument("--vision-image-mode", default="nearest", help="Interpolation mode for pseudo-images")
-    parser.add_argument(
-        "--vision-channel-mode", choices=["split", "replicate"], default="split", help="Channel mapping for pseudo-images"
-    )
+    parser.add_argument("--selection-metric", default="val_loss", help="Metric name for best checkpoint selection")
+    parser.add_argument("--metric-mode", choices=["min", "max"], default="min", help="Direction of selection metric")
 
     return parser.parse_args()
+
+
+class _WandbRun:
+    """Context manager around wandb.init/finish (best-effort)."""
+
+    def __init__(self, enabled: bool, *, project: Optional[str], run_name: Optional[str], config: dict[str, object]) -> None:
+        self.enabled = enabled and wandb is not None
+        self.project = project
+        self.run_name = run_name
+        self.config = config
+        self._active = False
+
+    def __enter__(self) -> "_WandbRun":
+        if self.enabled:
+            wandb.init(project=self.project, name=self.run_name, config=self.config, reinit=True)
+            self._active = True
+        return self
+
+    def log(self, payload: dict[str, object]) -> None:
+        if self._active:
+            wandb.log(payload)
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        if self._active:
+            wandb.finish()
+            self._active = False
 
 
 def main() -> None:  # pragma: no cover - CLI entry point
