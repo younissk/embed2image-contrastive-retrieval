@@ -13,11 +13,18 @@ from pathlib import Path
 from typing import Literal, Optional, Sequence
 
 import numpy as np
+import os
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset, Subset
 from tqdm.auto import tqdm
+
+try:  # optional logging backend
+    import wandb
+except ModuleNotFoundError:  # pragma: no cover - dependency optional
+    wandb = None
 
 try:
     from PIL import Image
@@ -39,6 +46,39 @@ def _setup_log_file(base_dir: Path, category: str, run_name: Optional[str], meta
     with log_path.open("w", encoding="utf-8") as handle:
         handle.write(json.dumps(header) + "\n")
     return log_path
+
+
+class _WandbRun:
+    """Lightweight context manager for optional wandb usage."""
+
+    def __init__(
+        self,
+        enabled: bool,
+        *,
+        project: Optional[str],
+        run_name: Optional[str],
+        config: dict[str, object],
+    ) -> None:
+        self.enabled = enabled and wandb is not None
+        self.project = project
+        self.run_name = run_name
+        self.config = config
+        self._active = False
+
+    def __enter__(self) -> "_WandbRun":
+        if self.enabled:
+            wandb.init(project=self.project, name=self.run_name, config=self.config, reinit=True)
+            self._active = True
+        return self
+
+    def log(self, payload: dict[str, object]) -> None:
+        if self._active:
+            wandb.log(payload)
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        if self._active:
+            wandb.finish()
+            self._active = False
 
 
 def _append_log(log_path: Path, payload: dict) -> None:
@@ -378,41 +418,54 @@ def train_projection_head(args: argparse.Namespace) -> dict[str, float]:
         },
     )
 
+    wandb_project = args.wandb_project or os.getenv("WANDB_PROJECT")
+    wandb_run = _WandbRun(
+        args.use_wandb,
+        project=wandb_project,
+        run_name=args.run_name,
+        config={
+            "input_type": args.input_type,
+            "dataset_size": len(dataset),
+            **{f"arg/{key}": value for key, value in vars(args).items()},
+        },
+    )
+
     best_val_loss: float | None = None
     best_epoch: Optional[int] = None
     history: dict[str, float] = {}
 
-    for epoch in range(1, args.epochs + 1):
-        anchor_head.train()
-        text_head.train()
-        running_loss = 0.0
-        num_batches = 0
-        for batch_anchor, batch_text in tqdm(
-            train_loader, desc=f"Epoch {epoch}/{args.epochs}", leave=False
-        ):
-            batch_anchor = batch_anchor.to(device)
-            batch_text = batch_text.to(device)
+    with wandb_run:
+        for epoch in range(1, args.epochs + 1):
+            anchor_head.train()
+            text_head.train()
+            running_loss = 0.0
+            num_batches = 0
+            for batch_anchor, batch_text in tqdm(
+                train_loader, desc=f"Epoch {epoch}/{args.epochs}", leave=False
+            ):
+                batch_anchor = batch_anchor.to(device)
+                batch_text = batch_text.to(device)
 
-            optimizer.zero_grad(set_to_none=True)
+                optimizer.zero_grad(set_to_none=True)
 
-            anchor_proj = anchor_head(batch_anchor)
-            text_proj = text_head(batch_text)
+                anchor_proj = anchor_head(batch_anchor)
+                text_proj = text_head(batch_text)
 
-            loss, logits = _contrastive_loss(anchor_proj, text_proj, args.temperature)
-            loss.backward()
-            optimizer.step()
+                loss, logits = _contrastive_loss(anchor_proj, text_proj, args.temperature)
+                loss.backward()
+                optimizer.step()
 
-            running_loss += loss.item()
-            num_batches += 1
+                running_loss += loss.item()
+                num_batches += 1
 
-        scheduler.step()
+            scheduler.step()
 
-        avg_train_loss = running_loss / max(1, num_batches)
-        log_items: dict[str, float | int] = {
-            "epoch": epoch,
-            "train_loss": avg_train_loss,
-            "lr": scheduler.get_last_lr()[0],
-        }
+            avg_train_loss = running_loss / max(1, num_batches)
+            log_items: dict[str, float | int] = {
+                "epoch": epoch,
+                "train_loss": avg_train_loss,
+                "lr": scheduler.get_last_lr()[0],
+            }
 
         if val_loader is not None:
             anchor_head.eval()
@@ -496,23 +549,21 @@ def train_projection_head(args: argparse.Namespace) -> dict[str, float]:
             )
         )
 
-        _append_log(
-            log_path,
-            {
-                "event": "epoch",
-                **{key: float(value) if isinstance(value, (int, float)) else value for key, value in log_items.items()},
-            },
-        )
+        payload = {
+            "event": "epoch",
+            **{key: float(value) if isinstance(value, (int, float)) else value for key, value in log_items.items()},
+        }
+        _append_log(log_path, payload)
+        wandb_run.log({k: v for k, v in payload.items() if isinstance(v, (int, float))})
 
-    if best_val_loss is not None:
-        _append_log(
-            log_path,
-            {
+        if best_val_loss is not None:
+            summary = {
                 "event": "best",
                 "epoch": best_epoch,
                 "best_val_loss": best_val_loss,
-            },
-        )
+            }
+            _append_log(log_path, summary)
+            wandb_run.log({k: v for k, v in summary.items() if isinstance(v, (int, float))})
 
     return history
 
@@ -659,6 +710,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--run-name",
         default=None,
         help="Optional identifier to include in log filenames",
+    )
+    parser.add_argument(
+        "--use-wandb",
+        action="store_true",
+        help="Stream metrics to Weights & Biases",
+    )
+    parser.add_argument(
+        "--wandb-project",
+        default=None,
+        help="Project name for Weights & Biases (defaults to WANDB_PROJECT env)",
     )
     parser.add_argument(
         "--vision-base-channels",

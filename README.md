@@ -176,3 +176,17 @@ Both commands invoke `src.train_finetune`, log their progress to
 `logs/finetune/`, and save checkpoints as `checkpoints/finetune_<mode>.pt`. Tune
 learning-rate schedule, warm-up, or projection dimensions through the
 `BASELINE_ARGS`/`VISION_ARGS` override strings.
+
+### Tracking with Weights & Biases
+
+All training CLIs (`train_projection.py`, `train_finetune.py`) accept
+`--use-wandb` to stream metrics to Weights & Biases. Configure your project by
+setting `WANDB_PROJECT`/`WANDB_ENTITY` in the environment or by passing
+`--wandb-project` on the command line, e.g.
+
+```bash
+WANDB_PROJECT=embed2image make train-baseline BASELINE_ARGS="--use-wandb --run-name a10-baseline"
+```
+
+Run `uv run wandb login` once per machine to authenticate before enabling the
+flag. JSONL logs are still written locally alongside the W&B run.

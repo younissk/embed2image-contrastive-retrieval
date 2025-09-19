@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import random
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,6 +22,7 @@ from hear21passt.base import get_basic_model
 
 from .train_projection import (
     VisionProjectionHead,
+    _WandbRun,
     _append_log,
     _sanitize_identifier,
     _setup_log_file,
@@ -396,85 +398,121 @@ def train(args: argparse.Namespace) -> None:
         },
     )
 
+    wandb_project = args.wandb_project or os.getenv("WANDB_PROJECT")
+    wandb_run = _WandbRun(
+        args.use_wandb,
+        project=wandb_project,
+        run_name=args.run_name,
+        config={
+            "model_type": args.model_type,
+            "dataset_size": len(dataset),
+            **{f"arg/{key}": value for key, value in vars(args).items()},
+        },
+    )
+
     best_metric: Optional[float] = None
     best_epoch: Optional[int] = None
     output_dir = Path(args.output_dir).expanduser()
     output_dir.mkdir(parents=True, exist_ok=True)
     checkpoint_path = output_dir / f"finetune_{args.model_type}.pt"
 
-    global_step = 0
+    with wandb_run:
+        for epoch in range(1, args.epochs + 1):
+            model.train()
+            epoch_loss = 0.0
+            num_batches = 0
 
-    for epoch in range(1, args.epochs + 1):
-        model.train()
-        epoch_loss = 0.0
-        num_batches = 0
+            for batch in train_loader:
+                scheduler.step()
+                optimizer.zero_grad(set_to_none=True)
 
-        for batch in train_loader:
-            global_step += 1
-            lr = scheduler.step()
-            optimizer.zero_grad(set_to_none=True)
+                audio = batch["audio"].to(model.device)
+                text_inputs = {
+                    key: value.to(model.device)
+                    for key, value in batch["text_inputs"].items()
+                }
 
-            audio = batch["audio"].to(model.device)
-            text_inputs = {
-                key: value.to(model.device) for key, value in batch["text_inputs"].items()
+                anchor_proj, text_proj = model(audio, text_inputs)
+                loss, logits = contrastive_loss(
+                    anchor_proj, text_proj, model.current_temperature()
+                )
+                loss.backward()
+
+                if args.grad_clip_norm > 0:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip_norm)
+
+                optimizer.step()
+                scheduler.step()
+
+                epoch_loss += loss.item()
+                num_batches += 1
+
+            avg_train_loss = epoch_loss / max(1, num_batches)
+            log_items: dict[str, float | int] = {
+                "epoch": epoch,
+                "train_loss": avg_train_loss,
+                "lr": scheduler.get_last_lr(),
             }
 
-            anchor_proj, text_proj = model(audio, text_inputs)
-            loss, logits = contrastive_loss(anchor_proj, text_proj, model.current_temperature())
-            loss.backward()
+            if val_loader is not None:
+                model.eval()
+                val_loss = 0.0
+                val_batches = 0
+                metrics_accumulator = {"acc_audio_to_text": 0.0, "acc_text_to_audio": 0.0}
 
-            if args.grad_clip_norm > 0:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip_norm)
+                with torch.no_grad():
+                    for batch in val_loader:
+                        audio = batch["audio"].to(model.device)
+                        text_inputs = {
+                            key: value.to(model.device)
+                            for key, value in batch["text_inputs"].items()
+                        }
+                        anchor_proj, text_proj = model(audio, text_inputs)
+                        loss, logits = contrastive_loss(
+                            anchor_proj, text_proj, model.current_temperature()
+                        )
+                        metrics = compute_metrics(logits)
+                        val_loss += loss.item()
+                        val_batches += 1
+                        for key in metrics_accumulator:
+                            metrics_accumulator[key] += metrics[key]
 
-            optimizer.step()
+                avg_val_loss = val_loss / max(1, val_batches)
+                log_items["val_loss"] = avg_val_loss
+                for key in metrics_accumulator:
+                    log_items[key] = metrics_accumulator[key] / max(1, val_batches)
 
-            epoch_loss += loss.item()
-            num_batches += 1
-
-        avg_train_loss = epoch_loss / max(1, num_batches)
-        log_items: dict[str, float | int] = {
-            "epoch": epoch,
-            "train_loss": avg_train_loss,
-            "lr": scheduler.get_last_lr(),
-        }
-
-        if val_loader is not None:
-            model.eval()
-            val_loss = 0.0
-            val_batches = 0
-            metrics_accumulator = {"acc_audio_to_text": 0.0, "acc_text_to_audio": 0.0}
-
-            with torch.no_grad():
-                for batch in val_loader:
-                    audio = batch["audio"].to(model.device)
-                    text_inputs = {
-                        key: value.to(model.device)
-                        for key, value in batch["text_inputs"].items()
-                    }
-                    anchor_proj, text_proj = model(audio, text_inputs)
-                    loss, logits = contrastive_loss(
-                        anchor_proj, text_proj, model.current_temperature()
+                metric_to_track = log_items.get(args.selection_metric, avg_val_loss)
+                improved = (
+                    best_metric is None
+                    or (
+                        metric_to_track < best_metric
+                        if args.metric_mode == "min"
+                        else metric_to_track > best_metric
                     )
-                    metrics = compute_metrics(logits)
-                    val_loss += loss.item()
-                    val_batches += 1
-                    for key in metrics_accumulator:
-                        metrics_accumulator[key] += metrics[key]
-
-            avg_val_loss = val_loss / max(1, val_batches)
-            log_items["val_loss"] = avg_val_loss
-            for key in metrics_accumulator:
-                log_items[key] = metrics_accumulator[key] / max(1, val_batches)
-
-            metric_to_track = log_items.get(args.selection_metric, avg_val_loss)
-            if best_metric is None or (metric_to_track < best_metric if args.metric_mode == "min" else metric_to_track > best_metric):
-                best_metric = metric_to_track
-                best_epoch = epoch
+                )
+                if improved:
+                    best_metric = metric_to_track
+                    best_epoch = epoch
+                    torch.save(
+                        {
+                            "epoch": epoch,
+                            "loss": avg_val_loss,
+                            "metric": metric_to_track,
+                            "args": vars(args),
+                            "model_state": model.state_dict(),
+                            "tokenizer": args.text_model,
+                            "audio_arch": args.audio_arch,
+                            "model_type": args.model_type,
+                        },
+                        checkpoint_path,
+                    )
+            else:
                 torch.save(
                     {
                         "epoch": epoch,
-                        "loss": avg_val_loss,
-                        "metric": metric_to_track,
+                        "loss": avg_train_loss,
+                        "metric": avg_train_loss,
                         "args": vars(args),
                         "model_state": model.state_dict(),
                         "tokenizer": args.text_model,
@@ -483,39 +521,23 @@ def train(args: argparse.Namespace) -> None:
                     },
                     checkpoint_path,
                 )
-        else:
-            torch.save(
-                {
-                    "epoch": epoch,
-                    "loss": avg_train_loss,
-                    "metric": avg_train_loss,
-                    "args": vars(args),
-                    "model_state": model.state_dict(),
-                    "tokenizer": args.text_model,
-                    "audio_arch": args.audio_arch,
-                    "model_type": args.model_type,
-                },
-                checkpoint_path,
-            )
 
-        _append_log(
-            log_path,
-            {
+            payload = {
                 "event": "epoch",
                 **{k: float(v) if isinstance(v, (int, float)) else v for k, v in log_items.items()},
-            },
-        )
+            }
+            _append_log(log_path, payload)
+            wandb_run.log({k: v for k, v in payload.items() if isinstance(v, (int, float))})
 
-    if best_metric is not None:
-        _append_log(
-            log_path,
-            {
+        if best_metric is not None:
+            summary = {
                 "event": "best",
                 "epoch": best_epoch,
                 "metric": best_metric,
                 "checkpoint": str(checkpoint_path),
-            },
-        )
+            }
+            _append_log(log_path, summary)
+            wandb_run.log({k: v for k, v in summary.items() if isinstance(v, (int, float))})
 
 
 def parse_args() -> argparse.Namespace:
@@ -524,6 +546,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", default="checkpoints", help="Directory for checkpoints")
     parser.add_argument("--log-dir", default="logs", help="Directory for JSONL logs")
     parser.add_argument("--run-name", default=None, help="Optional run identifier for logging")
+    parser.add_argument("--use-wandb", action="store_true", help="Stream metrics to Weights & Biases")
+    parser.add_argument(
+        "--wandb-project",
+        default=None,
+        help="Project name for Weights & Biases (defaults to WANDB_PROJECT env)",
+    )
 
     parser.add_argument("--model-type", choices=["baseline", "vision"], default="baseline")
     parser.add_argument("--audio-arch", default="passt_s_swa_p16_128_ap476", help="PaSST architecture")
