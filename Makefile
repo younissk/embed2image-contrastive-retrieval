@@ -19,7 +19,6 @@ download-dataset:
 download-embeddings:
 	uv run python -m src.utils.download_embeddings --cache-dir "$(CACHE_DIR)" --print-stats
 
-
 cache-embeddings:
 	uv run python -m src.utils.embeddings --metadata "$(METADATA)" --cache-dir "$(CACHE_DIR)" $(CACHE_ARGS)
 
