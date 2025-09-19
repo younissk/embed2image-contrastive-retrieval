@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import math
 import os
 import random
@@ -329,6 +330,30 @@ def split_dataset(dataset: Dataset, val_fraction: float, seed: int) -> tuple[Dat
     val_indices = indices[:num_val]
     train_indices = indices[num_val:]
     return Subset(dataset, train_indices), Subset(dataset, val_indices)
+
+
+def _setup_log_file(log_dir: Path, prefix: str, run_name: Optional[str], metadata: dict) -> Path:
+    """Create a log file with timestamp and metadata header."""
+    from datetime import datetime
+    
+    timestamp = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+    run_suffix = f"_{run_name}" if run_name else ""
+    log_filename = f"{prefix}_{timestamp}{run_suffix}.jsonl"
+    
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / log_filename
+    
+    # Write metadata header
+    with log_path.open("w", encoding="utf-8") as f:
+        f.write(json.dumps({"event": "metadata", **metadata}) + "\n")
+    
+    return log_path
+
+
+def _append_log(log_path: Path, payload: dict) -> None:
+    """Append a log entry to the JSONL log file."""
+    with log_path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(payload) + "\n")
 
 
 def train(args: argparse.Namespace) -> None:
