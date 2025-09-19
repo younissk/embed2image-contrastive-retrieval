@@ -285,6 +285,7 @@ class RetrievalModel(nn.Module):
 
     def encode_audio(self, waveforms: torch.Tensor) -> torch.Tensor:
         embeddings = self.audio_model.get_scene_embeddings(waveforms.to(self.device))
+        embeddings = embeddings.to(self.device)
         return self.audio_projection(embeddings)
 
     def encode_text(self, text_inputs: dict[str, torch.Tensor]) -> torch.Tensor:
