@@ -5,8 +5,13 @@ METADATA ?= $(DATA_ROOT)/clotho_csv_files/clotho_captions_development.csv
 .PHONY: test prepare download-dataset check-dataset train wandb ensure-uv
 
 ensure-uv:
-	@command -v uv >/dev/null 2>&1 || (echo "uv not found. Installing..." && curl -LsSf https://astral.sh/uv/install.sh | sh -s -- --root /usr/local)
+	@command -v uv >/dev/null 2>&1 || (echo "uv not found. Installing..." && curl -LsSf https://astral.sh/uv/install.sh | sh)
 	@command -v uv >/dev/null 2>&1 || (echo "uv still not found after installation" && exit 1)
+	@if [ ! -f /usr/local/bin/uv ] && [ -f $$HOME/.local/bin/uv ]; then \
+		echo "Creating symlink to /usr/local/bin for system-wide access..."; \
+		sudo ln -sf $$HOME/.local/bin/uv /usr/local/bin/uv; \
+		sudo ln -sf $$HOME/.local/bin/uvx /usr/local/bin/uvx; \
+	fi
 
 test: ensure-uv
 	uv run python -m src.main
