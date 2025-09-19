@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import json
 import math
 import os
 import random
@@ -48,6 +47,10 @@ def _sanitize_identifier(value: str) -> str:
     return cleaned or "sample"
 
 
+def _normalized(name: str) -> str:
+    return "".join(ch.lower() for ch in name if ch.isalnum())
+
+
 def _load_clotho_samples(metadata_path: Path) -> list[Sample]:
     if metadata_path.suffix.lower() != ".csv":
         raise ValueError("Expected a Clotho caption CSV as metadata input")
@@ -60,6 +63,12 @@ def _load_clotho_samples(metadata_path: Path) -> list[Sample]:
             f"Missing audio directory '{audio_dir}'. Run 'make download-dataset' first."
         )
 
+    # Build a lookup table mapping both original and normalized filenames to actual file paths
+    lookup = {}
+    for wav_path in audio_dir.glob("*.wav"):
+        lookup[wav_path.name] = wav_path
+        lookup.setdefault(_normalized(wav_path.name), wav_path)
+
     samples: list[Sample] = []
     with metadata_path.open("r", encoding="utf-8") as handle:
         reader = csv.DictReader(handle)
@@ -71,9 +80,9 @@ def _load_clotho_samples(metadata_path: Path) -> list[Sample]:
 
         for row in reader:
             filename = row["file_name"].strip()
-            audio_path = audio_dir / filename
-            if not audio_path.exists():
-                raise FileNotFoundError(f"Audio file not found: {audio_path}")
+            audio_path = lookup.get(filename) or lookup.get(_normalized(filename))
+            if audio_path is None:
+                raise FileNotFoundError(f"Audio file not found: {filename} (tried both original and normalized names)")
             for idx, column in enumerate(caption_columns, start=1):
                 caption = row.get(column, "").strip()
                 if not caption:
