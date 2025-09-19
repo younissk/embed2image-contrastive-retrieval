@@ -592,21 +592,49 @@ class _WandbRun:
         self.run_name = run_name
         self.config = config
         self._active = False
+        self._init_error = None
 
     def __enter__(self) -> "_WandbRun":
         if self.enabled:
-            wandb.init(project=self.project, name=self.run_name, config=self.config, reinit=True)
-            self._active = True
+            try:
+                # Check if wandb is logged in
+                if not wandb.api.api_key:
+                    print("Warning: wandb is not logged in. Run 'wandb login' to enable logging.")
+                    self.enabled = False
+                    return self
+                
+                # Validate project name
+                if not self.project:
+                    print("Warning: No wandb project specified. Set --wandb-project or WANDB_PROJECT env var.")
+                    self.enabled = False
+                    return self
+                
+                wandb.init(project=self.project, name=self.run_name, config=self.config, reinit=True)
+                self._active = True
+                print(f"wandb: Started run in project '{self.project}' with name '{self.run_name}'")
+            except Exception as e:
+                print(f"Warning: Failed to initialize wandb: {e}")
+                print("Continuing without wandb logging...")
+                self.enabled = False
+                self._init_error = e
         return self
 
     def log(self, payload: dict[str, object]) -> None:
         if self._active:
-            wandb.log(payload)
+            try:
+                wandb.log(payload)
+            except Exception as e:
+                print(f"Warning: Failed to log to wandb: {e}")
 
     def __exit__(self, exc_type, exc, tb) -> None:
         if self._active:
-            wandb.finish()
-            self._active = False
+            try:
+                wandb.finish()
+                print("wandb: Run finished")
+            except Exception as e:
+                print(f"Warning: Failed to finish wandb run: {e}")
+            finally:
+                self._active = False
 
 
 def main() -> None:  # pragma: no cover - CLI entry point
