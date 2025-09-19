@@ -14,5 +14,5 @@ prepare:
 download-dataset:
 	uv run python -m src.utils.download_dataset
 
-train:
+train: download-dataset
 	uv run python -m src.train_finetune --metadata "$(METADATA)" $(TRAIN_ARGS)
