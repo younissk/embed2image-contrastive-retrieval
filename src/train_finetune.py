@@ -278,6 +278,9 @@ class RetrievalModel(nn.Module):
         self.audio_projection = ProjectionHead(audio_dim, hidden_dim, projection_dim, dropout)
         self.text_projection = ProjectionHead(text_dim, hidden_dim, projection_dim, dropout)
 
+        self.audio_projection.to(self.device)
+        self.text_projection.to(self.device)
+
         self.temperature = nn.Parameter(torch.tensor(0.07))
 
     def encode_audio(self, waveforms: torch.Tensor) -> torch.Tensor:
