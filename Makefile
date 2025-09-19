@@ -21,5 +21,5 @@ check-dataset:
 wandb:
 	@uv run python -c "import wandb; import sys; sys.exit(0) if wandb.Api().api_key else sys.exit(1)" || (echo 'wandb not logged in. Please login:' && wandb login)
 
-train: check-dataset wandb
+train: check-dataset
 	uv run python -m src.train_finetune --metadata "$(METADATA)" $(TRAIN_ARGS)
