@@ -60,6 +60,9 @@ make train-baseline TRAIN_ARGS="--batch-size 8 --accumulate-grad-batches 4"
   customisation if you want to deviate from the baseline defaults.
 - `--projection-head`: choose an alternative projection head (defaults to the
   baseline MLP and can be extended via the head registry).
+- `--vision-*`: when using `--projection-head vision`, control the pseudo-image
+  pipeline (e.g. `--vision-image-size`, `--vision-backbone`,
+  `--vision-feature-pooling`, `--vision-pretrained`, `--vision-channel-mode`).
 - `--precision`: set mixed precision (`bf16-mixed`, `16-mixed`, etc.) to leverage
   tensor cores.
 - `--use-wandb` / `--wandb-project` / `--wandb-entity`: stream metrics to

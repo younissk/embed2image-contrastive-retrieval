@@ -7,7 +7,9 @@ from typing import Type
 import torch
 import torch.nn as nn
 
-__all__ = ["ProjectionHead", "HEAD_REGISTRY", "resolve_projection_head"]
+from .vision_head import VisionProjectionHead
+
+__all__ = ["ProjectionHead", "VisionProjectionHead", "HEAD_REGISTRY", "resolve_projection_head"]
 
 
 class ProjectionHead(nn.Module):
@@ -30,12 +32,13 @@ class ProjectionHead(nn.Module):
         return self.net(inputs)
 
 
-HEAD_REGISTRY: dict[str, Type[ProjectionHead]] = {
+HEAD_REGISTRY: dict[str, Type[nn.Module]] = {
     "mlp": ProjectionHead,
+    "vision": VisionProjectionHead,
 }
 
 
-def resolve_projection_head(name: str) -> Type[ProjectionHead]:
+def resolve_projection_head(name: str) -> Type[nn.Module]:
     try:
         return HEAD_REGISTRY[name]
     except KeyError as exc:  # pragma: no cover - defensive

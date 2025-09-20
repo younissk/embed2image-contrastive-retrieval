@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import os
 from pathlib import Path
-from typing import Type
+from typing import Any, Type
 
 import lightning as L
 import torch
@@ -18,7 +18,6 @@ except ModuleNotFoundError:  # pragma: no cover - optional
 
 from .data.clotho import ClothoDataModule
 from .models.baseline import RetrievalModule
-from .models.projection import ProjectionHead, resolve_projection_head
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -41,6 +40,35 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--hidden-dim", type=int, default=1024, help="Hidden dimension in projection heads (0 for linear)")
     parser.add_argument("--dropout", type=float, default=0.1, help="Dropout in projection heads")
     parser.add_argument("--projection-head", default="mlp", help="Projection head identifier (see registry)")
+    parser.add_argument("--vision-image-size", type=int, default=128, help="Pseudo-image size for vision head")
+    parser.add_argument(
+        "--vision-channel-mode", choices=["split", "replicate"], default="split", help="Channel mode for Embed2Image"
+    )
+    parser.add_argument(
+        "--vision-interp-mode",
+        choices=["nearest", "bilinear", "bicubic"],
+        default="nearest",
+        help="Interpolation mode for Embed2Image",
+    )
+    parser.add_argument("--vision-backbone", default="vit_small_patch16_224", help="timm backbone for vision head")
+    parser.add_argument(
+        "--vision-feature-pooling",
+        choices=["cls", "avg", "max", "none"],
+        default="cls",
+        help="Pooling applied to ViT outputs",
+    )
+    parser.add_argument("--vision-dropout", type=float, default=0.0, help="Dropout inside the vision projection head")
+    parser.add_argument(
+        "--vision-pretrained",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Use pretrained weights for the vision backbone",
+    )
+    parser.add_argument(
+        "--vision-force-download",
+        action="store_true",
+        help="Force re-download of vision backbone weights (if supported)",
+    )
 
     parser.add_argument("--batch-size", type=int, default=32, help="Mini-batch size")
     parser.add_argument("--accumulate-grad-batches", type=int, default=1, help="Gradient accumulation steps")
@@ -97,7 +125,19 @@ def main() -> None:  # pragma: no cover - CLI entry point
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.set_float32_matmul_precision("medium")
 
-    projection_head_cls: Type[ProjectionHead] = resolve_projection_head(args.projection_head)
+    projection_kwargs: dict[str, Any] = {}
+    if args.projection_head == "vision":
+        feature_pooling = None if args.vision_feature_pooling == "none" else args.vision_feature_pooling
+        projection_kwargs = {
+            "image_size": args.vision_image_size,
+            "channel_mode": args.vision_channel_mode,
+            "interp_mode": args.vision_interp_mode,
+            "backbone_name": args.vision_backbone,
+            "pretrained": args.vision_pretrained,
+            "feature_pooling": feature_pooling,
+            "vision_dropout": args.vision_dropout,
+            "force_download": args.vision_force_download,
+        }
 
     data_module = ClothoDataModule(
         metadata=metadata_path,
@@ -121,7 +161,8 @@ def main() -> None:  # pragma: no cover - CLI entry point
         min_lr=args.min_lr,
         weight_decay=args.weight_decay,
         warmup_epochs=args.warmup_epochs,
-        projection_head=projection_head_cls,
+        projection_head_name=args.projection_head,
+        projection_kwargs=projection_kwargs,
     )
 
     logger = None

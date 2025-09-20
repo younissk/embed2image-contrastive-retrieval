@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from typing import Type
+from typing import Any, Dict, Optional
 
 import lightning as L
 import torch
@@ -13,7 +13,7 @@ from transformers import AutoModel
 
 from hear21passt.base import get_basic_model
 
-from .projection import ProjectionHead
+from .projection import resolve_projection_head
 from ..utils.metrics import contrastive_loss, compute_metrics, compute_global_metrics
 
 __all__ = ["RetrievalModule"]
@@ -32,10 +32,11 @@ class RetrievalModule(L.LightningModule):
         min_lr: float,
         weight_decay: float,
         warmup_epochs: float,
-        projection_head: Type[ProjectionHead] = ProjectionHead,
+        projection_head_name: str = "mlp",
+        projection_kwargs: Optional[Dict[str, Any]] = None,
     ) -> None:
         super().__init__()
-        self.save_hyperparameters(ignore=["projection_head"])
+        self.save_hyperparameters()
 
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.audio_model = get_basic_model(mode="embed_only", arch=audio_arch).to(device)
@@ -49,8 +50,10 @@ class RetrievalModule(L.LightningModule):
         audio_dim = getattr(self.audio_model, "embed_dim", 768)
         text_dim = self.text_model.config.hidden_size
 
-        self.audio_projection = projection_head(audio_dim, hidden_dim, projection_dim, dropout).to(device)
-        self.text_projection = projection_head(text_dim, hidden_dim, projection_dim, dropout).to(device)
+        head_cls = resolve_projection_head(projection_head_name)
+        kwargs = projection_kwargs or {}
+        self.audio_projection = head_cls(audio_dim, hidden_dim, projection_dim, dropout, **kwargs).to(device)
+        self.text_projection = head_cls(text_dim, hidden_dim, projection_dim, dropout, **kwargs).to(device)
 
         self.temperature = nn.Parameter(torch.tensor(0.07))
 
