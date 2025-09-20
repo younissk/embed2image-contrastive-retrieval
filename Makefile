@@ -14,7 +14,7 @@ TRAIN_DEFAULT_ARGS ?= \
 
 export PATH := $(HOME)/.local/bin:$(PATH)
 
-.PHONY: test prepare download-dataset check-dataset train wandb ensure-uv
+.PHONY: test prepare download-dataset check-dataset train-baseline wandb ensure-uv
 
 ensure-uv:
 	@command -v uv >/dev/null 2>&1 || (echo "uv not found. Installing..." && curl -LsSf https://astral.sh/uv/install.sh | sh -s -- --install-dir $$HOME/.local/bin --force)
@@ -37,5 +37,6 @@ check-dataset: ensure-uv
 wandb: ensure-uv
 	@uv run python -c "import wandb; import sys; sys.exit(0) if wandb.Api().api_key else sys.exit(1)" || (echo 'wandb not logged in. Please login:' && wandb login)
 
-train: check-dataset ensure-uv
-	uv run python -m src.train_finetune --metadata "$(METADATA)" $(TRAIN_DEFAULT_ARGS) $(TRAIN_ARGS)
+train-baseline: check-dataset ensure-uv
+	@run_name=$${RUN_NAME:-baseline-$$(date +%Y%m%d-%H%M%S)}; \
+	uv run python -m src.train_finetune --metadata "$(METADATA)" --run-name "$$run_name" $(TRAIN_DEFAULT_ARGS) $(TRAIN_ARGS)

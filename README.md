@@ -18,10 +18,10 @@ baseline (PaSST audio encoder + RoBERTa text encoder with learned projection
 heads). Launch a run and forward any CLI options through `TRAIN_ARGS`:
 
 ```bash
-make train
+make train-baseline
 ```
 
-By default `make train` forwards the following Lightning arguments:
+By default `make train-baseline` forwards the following Lightning arguments:
 
 ```
 --batch-size 6
@@ -34,10 +34,13 @@ By default `make train` forwards the following Lightning arguments:
 --grad-clip-norm 1.0
 ```
 
+Each invocation also sets a default run name `baseline-<timestamp>`; override it
+with `RUN_NAME=my-run make train-baseline ...` if you prefer.
+
 Add or override any option via `TRAIN_ARGS`, e.g.
 
 ```bash
-make train TRAIN_ARGS="--batch-size 8 --accumulate-grad-batches 4"
+make train-baseline TRAIN_ARGS="--batch-size 8 --accumulate-grad-batches 4"
 ```
 
 ### Useful arguments (`uv run python -m src.train_finetune --help`)
@@ -69,7 +72,7 @@ uv run wandb login
 Then enable logging on any run:
 
 ```bash
-WANDB_PROJECT=embed2image make train \
+WANDB_PROJECT=embed2image make train-baseline \
   TRAIN_ARGS="--use-wandb --wandb-entity your-team --run-name h100-baseline \
               --batch-size 4 --accumulate-grad-batches 8"
 ```
