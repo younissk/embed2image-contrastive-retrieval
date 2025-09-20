@@ -94,7 +94,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--early-stop-patience",
         type=int,
-        default=5,
+        default=10,
         help="Early stopping patience (epochs). Set <=0 to disable",
     )
     parser.add_argument(

@@ -98,7 +98,7 @@ make train-vision TRAIN_ARGS="--vision-backbone vit_base_patch16_224 --vision-im
 - `--use-wandb` / `--wandb-project` / `--wandb-entity`: stream metrics to
   Weights & Biases and control where runs are stored.
 - `--early-stop-patience` / `--early-stop-metric` / `--early-stop-mode`: control
-  Lightning’s early-stopping callback (defaults: patience 5 epochs, monitor
+  Lightning’s early-stopping callback (defaults: patience 10 epochs, monitor
   `val/mAP@10_text_to_audio`, mode `max`). Set patience ≤ 0 to disable.
 
 Lightning handles checkpointing (best validation loss) and logs learning-rate
