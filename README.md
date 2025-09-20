@@ -36,9 +36,9 @@ By default `make train-baseline` forwards the following Lightning arguments:
 
 Each invocation also sets a default run name `baseline-<timestamp>`; override it
 with `RUN_NAME=my-run make train-baseline ...` if you prefer. W&B logging is
-enabled automatically; configure destination via `WANDB_PROJECT` /
-`WANDB_ENTITY` env vars or override with `--wandb-project` / `--wandb-entity` in
-`TRAIN_ARGS`.
+enabled automatically and defaults to the `embed2image` project; change it via
+`WANDB_PROJECT` (or `--wandb-project` in `TRAIN_ARGS`). Supply `WANDB_ENTITY` /`--wandb-entity`
+if you want the run to land in a specific team/org.
 
 Add or override any option via `TRAIN_ARGS`, e.g.
 

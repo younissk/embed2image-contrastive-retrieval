@@ -1,6 +1,7 @@
 
 DATA_ROOT ?= $(HOME)/data/CLOTHO_v2.1
 METADATA ?= $(DATA_ROOT)/clotho_csv_files/clotho_captions_development.csv
+WANDB_PROJECT ?= embed2image
 
 TRAIN_DEFAULT_ARGS ?= \
 	--batch-size 6 \
@@ -11,7 +12,8 @@ TRAIN_DEFAULT_ARGS ?= \
 	--warmup-epochs 1.0 \
 	--max-lr 3e-6 \
 	--grad-clip-norm 1.0 \
-	--use-wandb
+	--use-wandb \
+	--wandb-project $(WANDB_PROJECT)
 
 export PATH := $(HOME)/.local/bin:$(PATH)
 
