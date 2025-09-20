@@ -21,6 +21,12 @@ heads). Launch a run and forward any CLI options through `TRAIN_ARGS`:
 make train-baseline
 ```
 
+Vision-head configuration (pseudo-image + ViT) has its own shortcut:
+
+```bash
+make train-vision
+```
+
 By default `make train-baseline` forwards the following Lightning arguments:
 
 ```
@@ -46,6 +52,30 @@ Add or override any option via `TRAIN_ARGS`, e.g.
 
 ```bash
 make train-baseline TRAIN_ARGS="--batch-size 8 --accumulate-grad-batches 4"
+```
+
+`make train-vision` behaves similarly but defaults to:
+
+```
+--batch-size 6
+--accumulate-grad-batches 4
+--max-audio-seconds 10
+--precision bf16-mixed
+--epochs 20
+--warmup-epochs 1.0
+--max-lr 3e-6
+--grad-clip-norm 1.0
+--num-workers 16
+--projection-head vision
+--vision-image-size 224
+--vision-backbone vit_small_patch16_224
+--vision-feature-pooling cls
+```
+
+Override with `TRAIN_ARGS` as needed, for example:
+
+```bash
+make train-vision TRAIN_ARGS="--vision-backbone vit_base_patch16_224 --vision-image-size 192"
 ```
 
 ### Useful arguments (`uv run python -m src.train_finetune --help`)
