@@ -4,9 +4,9 @@ METADATA ?= $(DATA_ROOT)/clotho_csv_files/clotho_captions_development.csv
 WANDB_PROJECT ?= embed2image
 
 TRAIN_DEFAULT_ARGS ?= \
-	--batch-size 32 \
+	--batch-size 24 \
 	--accumulate-grad-batches 2 \
-	--max-audio-seconds 18 \
+	--max-audio-seconds 16 \
 	--precision bf16-mixed \
 	--epochs 20 \
 	--warmup-epochs 1.0 \
