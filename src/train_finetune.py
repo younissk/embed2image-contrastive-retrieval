@@ -431,7 +431,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--log-dir", default="logs", help="Directory for logging")
     parser.add_argument("--run-name", default=None, help="Optional run name for loggers")
     parser.add_argument("--use-wandb", action="store_true", help="Enable Weights & Biases logging")
-    parser.add_argument("--wandb-project", default=None, help="W&B project name (defaults to WANDB_PROJECT env)")
+    parser.add_argument(
+        "--wandb-project",
+        default=None,
+        help="W&B project name (defaults to WANDB_PROJECT env)",
+    )
+    parser.add_argument(
+        "--wandb-entity",
+        default=None,
+        help="W&B entity/team (defaults to WANDB_ENTITY env)",
+    )
 
     parser.add_argument("--audio-arch", default="passt_s_swa_p16_128_ap476", help="PaSST architecture identifier")
     parser.add_argument("--text-model", default="roberta-base", help="Hugging Face text encoder")
@@ -506,7 +515,8 @@ def main() -> None:  # pragma: no cover - CLI entry point
         if WandbLogger is None:
             raise RuntimeError("wandb is not installed but --use-wandb was set")
         project = args.wandb_project or os.getenv("WANDB_PROJECT") or "embed2image"
-        logger = WandbLogger(project=project, name=args.run_name)
+        entity = args.wandb_entity or os.getenv("WANDB_ENTITY")
+        logger = WandbLogger(project=project, name=args.run_name, entity=entity, log_model=False)
 
     checkpoint_cb = ModelCheckpoint(
         dirpath=str(output_dir),

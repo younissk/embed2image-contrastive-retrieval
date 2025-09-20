@@ -39,7 +39,8 @@ make train TRAIN_ARGS="\
   customisation if you want to deviate from the baseline defaults.
 - `--precision`: set mixed precision (`bf16-mixed`, `16-mixed`, etc.) to leverage
   tensor cores.
-- `--use-wandb` / `--wandb-project`: stream metrics to Weights & Biases.
+- `--use-wandb` / `--wandb-project` / `--wandb-entity`: stream metrics to
+  Weights & Biases and control where runs are stored.
 
 Lightning handles checkpointing (best validation loss) and logs learning-rate
 curves; checkpoints land under `--output-dir` (default `checkpoints/`).
@@ -56,7 +57,8 @@ Then enable logging on any run:
 
 ```bash
 WANDB_PROJECT=embed2image make train \
-  TRAIN_ARGS="--use-wandb --run-name h100-baseline --batch-size 4 --accumulate-grad-batches 8"
+  TRAIN_ARGS="--use-wandb --wandb-entity your-team --run-name h100-baseline \
+              --batch-size 4 --accumulate-grad-batches 8"
 ```
 
 If W&B is disabled the run still logs locally via PyTorch Lightning.
