@@ -39,7 +39,8 @@ Each invocation also sets a default run name `baseline-<timestamp>`; override it
 with `RUN_NAME=my-run make train-baseline ...` if you prefer. W&B logging is
 enabled automatically and defaults to the `embed2image` project; change it via
 `WANDB_PROJECT` (or `--wandb-project` in `TRAIN_ARGS`). Supply `WANDB_ENTITY` /`--wandb-entity`
-if you want the run to land in a specific team/org.
+if you want the run to land in a specific team/org. After training finishes the
+newest checkpoint is automatically evaluated (see below).
 
 Add or override any option via `TRAIN_ARGS`, e.g.
 
@@ -57,13 +58,30 @@ make train-baseline TRAIN_ARGS="--batch-size 8 --accumulate-grad-batches 4"
   Values around 10–15 s keep utilisation high without exhausting VRAM.
 - `--audio-arch`, `--text-model`, `--projection-dim`, `--hidden-dim`: model
   customisation if you want to deviate from the baseline defaults.
+- `--projection-head`: choose an alternative projection head (defaults to the
+  baseline MLP and can be extended via the head registry).
 - `--precision`: set mixed precision (`bf16-mixed`, `16-mixed`, etc.) to leverage
   tensor cores.
 - `--use-wandb` / `--wandb-project` / `--wandb-entity`: stream metrics to
   Weights & Biases and control where runs are stored.
 
 Lightning handles checkpointing (best validation loss) and logs learning-rate
-curves; checkpoints land under `--output-dir` (default `checkpoints/`).
+curves. Validation additionally reports retrieval metrics (`R@{1,5,10}` in both
+directions) and `mAP@10`, mirroring the DCASE baseline. Checkpoints land under
+`--output-dir` (default `checkpoints/`).
+
+## Standalone Evaluation
+
+After training, evaluate a checkpoint across the full validation set:
+
+```bash
+make evaluate-baseline CHECKPOINT=checkpoints/finetune-epoch12.ckpt \
+  EVAL_ARGS="--batch-size 16"
+```
+
+If `CHECKPOINT` is omitted, the most recent `finetune-*.ckpt` in `checkpoints/`
+is used. The command prints the same recall/mAP metrics logged during training.
+Pass additional options through `EVAL_ARGS` (e.g. `--precision bf16-mixed`).
 
 ## Weights & Biases
 

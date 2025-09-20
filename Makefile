@@ -2,6 +2,7 @@
 DATA_ROOT ?= $(HOME)/data/CLOTHO_v2.1
 METADATA ?= $(DATA_ROOT)/clotho_csv_files/clotho_captions_development.csv
 WANDB_PROJECT ?= embed2image
+OUTPUT_DIR ?= checkpoints
 
 TRAIN_DEFAULT_ARGS ?= \
 	--batch-size 8 \
@@ -16,9 +17,11 @@ TRAIN_DEFAULT_ARGS ?= \
 	--use-wandb \
 	--wandb-project $(WANDB_PROJECT)
 
+EVAL_ARGS ?=
+
 export PATH := $(HOME)/.local/bin:$(PATH)
 
-.PHONY: test prepare download-dataset check-dataset train-baseline wandb ensure-uv
+.PHONY: test prepare download-dataset check-dataset train-baseline evaluate-baseline wandb ensure-uv
 
 ensure-uv:
 	@command -v uv >/dev/null 2>&1 || (echo "uv not found. Installing..." && curl -LsSf https://astral.sh/uv/install.sh | sh -s -- --install-dir $$HOME/.local/bin --force)
@@ -42,5 +45,21 @@ wandb: ensure-uv
 	@uv run python -c "import wandb; import sys; sys.exit(0) if wandb.Api().api_key else sys.exit(1)" || (echo 'wandb not logged in. Please login:' && wandb login)
 
 train-baseline: check-dataset ensure-uv
-	@run_name=$${RUN_NAME:-baseline-$$(date +%Y%m%d-%H%M%S)}; \
-	uv run python -m src.train_finetune --metadata "$(METADATA)" --run-name "$$run_name" $(TRAIN_DEFAULT_ARGS) $(TRAIN_ARGS)
+	@set -e; \
+	run_name=$${RUN_NAME:-baseline-$$(date +%Y%m%d-%H%M%S)}; \
+	uv run python -m src.train_finetune --metadata "$(METADATA)" --output-dir "$(OUTPUT_DIR)" --run-name "$$run_name" $(TRAIN_DEFAULT_ARGS) $(TRAIN_ARGS); \
+	latest=$$(ls -1t $(OUTPUT_DIR)/finetune-*.ckpt 2>/dev/null | head -n1); \
+	if [ -n "$$latest" ]; then \
+		$(MAKE) --no-print-directory evaluate-baseline CHECKPOINT="$$latest" EVAL_ARGS="$(EVAL_ARGS)"; \
+	else \
+		echo "No checkpoint found in $(OUTPUT_DIR)"; \
+	fi
+
+evaluate-baseline: check-dataset ensure-uv
+	@checkpoint=$${CHECKPOINT:-$$(ls -1t $(OUTPUT_DIR)/finetune-*.ckpt 2>/dev/null | head -n1)}; \
+	if [ -z "$$checkpoint" ]; then \
+		echo "No checkpoint found in $(OUTPUT_DIR). Set CHECKPOINT=path/to.ckpt"; \
+		exit 1; \
+	fi; \
+	echo "Evaluating $$checkpoint"; \
+	uv run python -m src.eval_finetune --checkpoint "$$checkpoint" --metadata "$(METADATA)" $(EVAL_ARGS)

@@ -46,7 +46,7 @@ build/
 *.log
 *.sqlite3
 *.db
-logs/
+/logs/
 
 # OS files
 .DS_Store
@@ -59,11 +59,11 @@ Thumbs.db
 *.sublime-project
 
 # Data/model artifacts
-data/
-models/
-outputs/
-results/
-checkpoints/
+/data/
+/models/
+/outputs/
+/results/
+/checkpoints/
 
 # Misc
 *.bak
