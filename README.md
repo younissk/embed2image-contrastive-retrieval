@@ -24,9 +24,9 @@ make train-baseline
 By default `make train-baseline` forwards the following Lightning arguments:
 
 ```
---batch-size 12
+--batch-size 8
 --accumulate-grad-batches 4
---max-audio-seconds 12
+--max-audio-seconds 10
 --precision bf16-mixed
 --epochs 20
 --warmup-epochs 1.0
@@ -51,7 +51,7 @@ make train-baseline TRAIN_ARGS="--batch-size 8 --accumulate-grad-batches 4"
 
 - `--batch-size` / `--accumulate-grad-batches`: use micro-batches that fit
   comfortably in memory and recover the desired effective batch with gradient
-  accumulation. The defaults (`12 × 4`) give an effective batch of 48; adjust as
+  accumulation. The defaults (`8 × 4`) give an effective batch of 32; adjust as
   needed for your GPU.
 - `--max-audio-seconds`: truncate clips before PaSST to control memory/latency.
   Values around 10–15 s keep utilisation high without exhausting VRAM.
