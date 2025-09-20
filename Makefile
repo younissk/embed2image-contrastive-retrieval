@@ -4,14 +4,15 @@ METADATA ?= $(DATA_ROOT)/clotho_csv_files/clotho_captions_development.csv
 WANDB_PROJECT ?= embed2image
 
 TRAIN_DEFAULT_ARGS ?= \
-	--batch-size 6 \
-	--accumulate-grad-batches 6 \
-	--max-audio-seconds 12 \
+	--batch-size 32 \
+	--accumulate-grad-batches 2 \
+	--max-audio-seconds 18 \
 	--precision bf16-mixed \
 	--epochs 20 \
 	--warmup-epochs 1.0 \
 	--max-lr 3e-6 \
 	--grad-clip-norm 1.0 \
+	--num-workers 16 \
 	--use-wandb \
 	--wandb-project $(WANDB_PROJECT)
 
