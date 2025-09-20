@@ -64,6 +64,9 @@ make train-baseline TRAIN_ARGS="--batch-size 8 --accumulate-grad-batches 4"
   tensor cores.
 - `--use-wandb` / `--wandb-project` / `--wandb-entity`: stream metrics to
   Weights & Biases and control where runs are stored.
+- `--early-stop-patience` / `--early-stop-metric` / `--early-stop-mode`: control
+  Lightning’s early-stopping callback (defaults: patience 5 epochs, monitor
+  `val/mAP@10_text_to_audio`, mode `max`). Set patience ≤ 0 to disable.
 
 Lightning handles checkpointing (best validation loss) and logs learning-rate
 curves. Validation additionally reports retrieval metrics (`R@{1,5,10}` in both

@@ -9,7 +9,7 @@ from typing import Type
 
 import lightning as L
 import torch
-from lightning.pytorch.callbacks import LearningRateMonitor, ModelCheckpoint
+from lightning.pytorch.callbacks import EarlyStopping, LearningRateMonitor, ModelCheckpoint
 
 try:  # optional dependency
     from lightning.pytorch.loggers import WandbLogger
@@ -63,6 +63,23 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--strategy", default="auto", help="Lightning strategy (e.g. ddp, auto)")
     parser.add_argument("--log-every-n-steps", type=int, default=25, help="Logging frequency")
     parser.add_argument("--deterministic", action="store_true", help="Enable deterministic trainer mode")
+    parser.add_argument(
+        "--early-stop-patience",
+        type=int,
+        default=5,
+        help="Early stopping patience (epochs). Set <=0 to disable",
+    )
+    parser.add_argument(
+        "--early-stop-metric",
+        default="val/mAP@10_text_to_audio",
+        help="Metric monitored for early stopping",
+    )
+    parser.add_argument(
+        "--early-stop-mode",
+        choices=["min", "max"],
+        default="max",
+        help="Early stopping direction",
+    )
 
     return parser
 
@@ -123,6 +140,17 @@ def main() -> None:  # pragma: no cover - CLI entry point
         save_top_k=1,
     )
     lr_monitor = LearningRateMonitor(logging_interval="step")
+    callbacks = [checkpoint_cb, lr_monitor]
+
+    if args.early_stop_patience > 0:
+        callbacks.append(
+            EarlyStopping(
+                monitor=args.early_stop_metric,
+                patience=args.early_stop_patience,
+                mode=args.early_stop_mode,
+                verbose=True,
+            )
+        )
 
     trainer = L.Trainer(
         default_root_dir=str(output_dir),
@@ -133,7 +161,7 @@ def main() -> None:  # pragma: no cover - CLI entry point
         precision=args.precision,
         accumulate_grad_batches=args.accumulate_grad_batches,
         logger=logger,
-        callbacks=[checkpoint_cb, lr_monitor],
+        callbacks=callbacks,
         gradient_clip_val=args.grad_clip_norm if args.grad_clip_norm > 0 else None,
         log_every_n_steps=args.log_every_n_steps,
         deterministic=args.deterministic,
