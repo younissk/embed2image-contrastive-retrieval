@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import os
 from pathlib import Path
-from typing import Any, Type
+from typing import Any
 
 import lightning as L
 import torch
@@ -94,8 +94,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--early-stop-patience",
         type=int,
-        default=10,
-        help="Early stopping patience (epochs). Set <=0 to disable",
+        default=0,
+        help="Early stopping patience (epochs). Defaults to 0 (disabled)",
     )
     parser.add_argument(
         "--early-stop-metric",

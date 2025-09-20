@@ -59,17 +59,19 @@ make train-baseline TRAIN_ARGS="--batch-size 8 --accumulate-grad-batches 4"
 ```
 --batch-size 6
 --accumulate-grad-batches 4
---max-audio-seconds 10
+--max-audio-seconds 12
 --precision bf16-mixed
 --epochs 20
---warmup-epochs 1.0
---max-lr 3e-6
---grad-clip-norm 1.0
+--warmup-epochs 2.0
+--max-lr 1e-6
+--min-lr 1e-7
+--grad-clip-norm 0.5
 --num-workers 16
 --projection-head vision
 --vision-image-size 224
 --vision-backbone vit_small_patch16_224
 --vision-feature-pooling cls
+--vision-dropout 0.1
 ```
 
 Override with `TRAIN_ARGS` as needed, for example:
@@ -97,9 +99,8 @@ make train-vision TRAIN_ARGS="--vision-backbone vit_base_patch16_224 --vision-im
   tensor cores.
 - `--use-wandb` / `--wandb-project` / `--wandb-entity`: stream metrics to
   Weights & Biases and control where runs are stored.
-- `--early-stop-patience` / `--early-stop-metric` / `--early-stop-mode`: control
-  Lightning’s early-stopping callback (defaults: patience 10 epochs, monitor
-  `val/mAP@10_text_to_audio`, mode `max`). Set patience ≤ 0 to disable.
+- `--early-stop-patience` / `--early-stop-metric` / `--early-stop-mode`: optional
+  Lightning early stopping (disabled by default; set patience > 0 to enable).
 
 Lightning handles checkpointing (best validation loss) and logs learning-rate
 curves. Validation additionally reports retrieval metrics (`R@{1,5,10}` in both

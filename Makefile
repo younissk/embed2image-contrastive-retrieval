@@ -20,19 +20,21 @@ TRAIN_DEFAULT_ARGS ?= \
 TRAIN_VISION_DEFAULT_ARGS ?= \
 	--batch-size 6 \
 	--accumulate-grad-batches 4 \
-	--max-audio-seconds 10 \
+	--max-audio-seconds 12 \
 	--precision bf16-mixed \
 	--epochs 20 \
-	--warmup-epochs 1.0 \
-	--max-lr 3e-6 \
-	--grad-clip-norm 1.0 \
+	--warmup-epochs 2.0 \
+	--max-lr 1e-6 \
+	--min-lr 1e-7 \
+	--grad-clip-norm 0.5 \
 	--num-workers 16 \
 	--use-wandb \
 	--wandb-project $(WANDB_PROJECT) \
 	--projection-head vision \
 	--vision-image-size 224 \
 	--vision-backbone vit_small_patch16_224 \
-	--vision-feature-pooling cls
+	--vision-feature-pooling cls \
+	--vision-dropout 0.1
 
 EVAL_ARGS ?=
 
