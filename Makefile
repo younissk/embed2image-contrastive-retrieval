@@ -10,7 +10,8 @@ TRAIN_DEFAULT_ARGS ?= \
 	--epochs 20 \
 	--warmup-epochs 1.0 \
 	--max-lr 3e-6 \
-	--grad-clip-norm 1.0
+	--grad-clip-norm 1.0 \
+	--use-wandb
 
 export PATH := $(HOME)/.local/bin:$(PATH)
 
