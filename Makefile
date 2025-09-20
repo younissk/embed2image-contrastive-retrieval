@@ -2,6 +2,16 @@
 DATA_ROOT ?= $(HOME)/data/CLOTHO_v2.1
 METADATA ?= $(DATA_ROOT)/clotho_csv_files/clotho_captions_development.csv
 
+TRAIN_DEFAULT_ARGS ?= \
+	--batch-size 6 \
+	--accumulate-grad-batches 6 \
+	--max-audio-seconds 12 \
+	--precision bf16-mixed \
+	--epochs 20 \
+	--warmup-epochs 1.0 \
+	--max-lr 3e-6 \
+	--grad-clip-norm 1.0
+
 export PATH := $(HOME)/.local/bin:$(PATH)
 
 .PHONY: test prepare download-dataset check-dataset train wandb ensure-uv
@@ -28,4 +38,4 @@ wandb: ensure-uv
 	@uv run python -c "import wandb; import sys; sys.exit(0) if wandb.Api().api_key else sys.exit(1)" || (echo 'wandb not logged in. Please login:' && wandb login)
 
 train: check-dataset ensure-uv
-	uv run python -m src.train_finetune --metadata "$(METADATA)" $(TRAIN_ARGS)
+	uv run python -m src.train_finetune --metadata "$(METADATA)" $(TRAIN_DEFAULT_ARGS) $(TRAIN_ARGS)

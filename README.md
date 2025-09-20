@@ -18,21 +18,34 @@ baseline (PaSST audio encoder + RoBERTa text encoder with learned projection
 heads). Launch a run and forward any CLI options through `TRAIN_ARGS`:
 
 ```bash
-make train TRAIN_ARGS="\
-  --batch-size 4 \
-  --accumulate-grad-batches 8 \
-  --max-audio-seconds 12 \
-  --epochs 20 \
-  --precision bf16-mixed \
-  --max-lr 3e-6"
+make train
+```
+
+By default `make train` forwards the following Lightning arguments:
+
+```
+--batch-size 6
+--accumulate-grad-batches 6
+--max-audio-seconds 12
+--precision bf16-mixed
+--epochs 20
+--warmup-epochs 1.0
+--max-lr 3e-6
+--grad-clip-norm 1.0
+```
+
+Add or override any option via `TRAIN_ARGS`, e.g.
+
+```bash
+make train TRAIN_ARGS="--batch-size 8 --accumulate-grad-batches 4"
 ```
 
 ### Useful arguments (`uv run python -m src.train_finetune --help`)
 
 - `--batch-size` / `--accumulate-grad-batches`: use small micro-batches that fit
   comfortably in memory and recover the desired effective batch with gradient
-  accumulation. On large GPUs (A100/H100) a good starting point is
-  `--batch-size 4 --accumulate-grad-batches 8`.
+  accumulation. The defaults (`6 × 6`) give an effective batch of 36; adjust as
+  needed for your GPU.
 - `--max-audio-seconds`: truncate clips before PaSST to control memory/latency.
   Values around 10–15 s keep utilisation high without exhausting VRAM.
 - `--audio-arch`, `--text-model`, `--projection-dim`, `--hidden-dim`: model
